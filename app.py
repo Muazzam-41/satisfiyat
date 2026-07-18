@@ -4,17 +4,19 @@ import pandas as pd
 import io
 import re
 
+# Sayfa Ayarları
 st.set_page_config(page_title="Pro Katalog Fiyat Botu", layout="wide")
 
+# Hatalı olan kısım burasıydı, düzeltildi: unsafe_allow_html=True
 st.markdown("""
     <style>
     .main { background-color: #f5f5f5; }
-    .stButton>button { width: 100%; background-color: #007bff; color: white; }
+    .stButton>button { width: 100%; background-color: #28a745; color: white; font-weight: bold; }
     </style>
-    """, unsafe_allow_stdio=True)
+    """, unsafe_allow_html=True)
 
-st.title("🚀 Gelişmiş Katalog Fiyat İşleyici")
-st.write("PDF'deki büyük başlıkları, ürün kodlarını ve fiyatları akıllıca eşleştirir.")
+st.title("📊 Profesyonel Katalog Fiyat İşleyici")
+st.info("PDF'deki büyük başlıkları (Ürün İsmi) yakalar ve altındaki kod/fiyatlarla eşleştirir.")
 
 # Kullanıcı Girişleri
 col1, col2, col3 = st.columns([2, 1, 1])
@@ -23,14 +25,19 @@ with col1:
 with col2:
     discount_input = st.text_input("İskonto (Örn: 50+15+5)", value="50+10")
 with col3:
-    header_font_size = st.slider("Başlık Yakalama Hassasiyeti", 10.0, 25.0, 13.0)
-    st.caption("Başlıkları bulamıyorsa bu değeri düşürün.")
+    header_font_size = st.slider("Başlık Font Hassasiyeti", 8.0, 25.0, 12.0)
+    st.caption("Başlıkları kaçırıyorsa bu değeri düşürün.")
 
-def calculate_chain_discount(price, discount_str):
-    """50+15 gibi zincir iskontoları hesaplar."""
+def calculate_chain_discount(price_str, discount_str):
+    """Zincir iskontoyu hesaplar (Örn: 1.250,50 için 50+10)"""
     try:
-        clean_p = str(price).replace('.', '').replace(',', '.')
+        # Fiyat metnini sayıya çevir (1.250,50 -> 1250.50)
+        clean_p = price_str.replace('.', '').replace(',', '.')
         current_price = float(clean_p)
+        
+        if not discount_str:
+            return round(current_price, 2)
+            
         discounts = [float(d.strip()) for d in discount_str.split('+') if d.strip()]
         for d in discounts:
             current_price = current_price * (1 - d / 100)
@@ -38,15 +45,13 @@ def calculate_chain_discount(price, discount_str):
     except:
         return 0
 
-def process_catalog_pdf(pdf_file, discount_str, threshold):
+def process_pdf(pdf_file, discount_str, threshold):
     extracted_data = []
     current_header = "Bilinmeyen Ürün Grubu"
     
-    # Fiyat formatı regex (Örn: 14.223,53 veya 27,96)
-    price_pattern = re.compile(r'\d{1,3}(?:\.\d{3})*,\d{2}')
-    # Kod formatı regex (Örn: VDS 753023, ARM 717254, NRA 004866)
-    code_pattern = re.compile(r'[A-Z]{1,4}\s?\d+')
-
+    # Fiyat ve Kod yakalamak için Regex (Resimlerdeki formatlara göre)
+    price_pattern = re.compile(r'\d{1,3}(?:\.\d{3})*,\d{2}') # Örn: 13.890,48
+    
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
             # Sayfadaki her kelimeyi koordinat ve font bilgisiyle al
@@ -59,70 +64,63 @@ def process_catalog_pdf(pdf_file, discount_str, threshold):
                 if y not in lines: lines[y] = []
                 lines[y].append(w)
             
+            # Satırları yukarıdan aşağıya tara
             for y in sorted(lines.keys()):
                 line_words = lines[y]
                 line_text = " ".join([w['text'] for w in line_words])
                 max_font_in_line = max([w['size'] for w in line_words])
                 
-                # 1. ADIM: BAŞLIK YAKALAMA (Büyük ve kalın yazı)
+                # 1. BAŞLIK YAKALAMA (Büyük font ve içinde fiyat olmayan satır)
                 if max_font_in_line >= threshold:
-                    # Eğer satır tamamen sayı veya fiyat değilse başlık kabul et
                     if not price_pattern.search(line_text):
                         current_header = line_text
                         continue
 
-                # 2. ADIM: TABLO / SATIR YAKALAMA
+                # 2. SATIR İŞLEME (Fiyat içeren satırları yakala)
                 found_price = price_pattern.search(line_text)
                 if found_price:
-                    price_str = found_price.group()
-                    # Aynı satırda kod ara
-                    found_code = code_pattern.search(line_text)
+                    price_val_str = found_price.group()
                     
-                    if found_code:
-                        code_str = found_code.group()
-                    else:
-                        code_str = "Kod Bulunamadı"
+                    # Satırdaki ilk kelimeyi 'Kod' olarak al (VDS, ARM, NRA ile başladığı için)
+                    code_str = line_words[0]['text']
                     
-                    net_fiyat = calculate_chain_discount(price_str, discount_str)
+                    # Eğer kod ve fiyat aynı şeyse (kod bulunamadıysa)
+                    if code_str == price_val_str:
+                        code_str = "KOD BELİRTİLMEMİŞ"
+
+                    net_fiyat = calculate_chain_discount(price_val_str, discount_str)
                     
                     extracted_data.append({
-                        "Ürün Grubu": current_header,
+                        "Ürün İsmi (Başlık)": current_header,
                         "Ürün Kodu": code_str,
-                        "Liste Fiyatı": price_str,
-                        "Net Fiyat": net_fiyat,
-                        "Uygulanan İskonto": discount_str
+                        "Liste Fiyatı": price_val_str,
+                        "İskontolu Fiyat": net_fiyat,
+                        "İskonto Oranı": discount_str
                     })
 
     return extracted_data
 
 if uploaded_file:
-    with st.spinner('Katalog taranıyor, bu işlem PDF boyutuna göre biraz sürebilir...'):
-        results = process_catalog_pdf(uploaded_file, discount_input, header_font_size)
+    with st.spinner('Katalog analiz ediliyor...'):
+        results = process_pdf(uploaded_file, discount_input, header_font_size)
         
         if results:
             df = pd.DataFrame(results)
-            st.success(f"İşlem Tamam! {len(df)} adet ürün bulundu.")
+            st.success(f"✅ {len(df)} adet ürün başarıyla listelendi!")
             
             # Tabloyu göster
             st.dataframe(df, use_container_width=True)
             
-            # Excel Çıktısı
+            # Excel Hazırlama
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False, sheet_name='Fiyat Listesi')
+                df.to_excel(writer, index=False, sheet_name='Fiyatlar')
             
             st.download_button(
                 label="📥 Excel Dosyasını İndir",
                 data=output.getvalue(),
-                file_name="iskontolu_fiyat_listesi.xlsx",
+                file_name="iskontolu_fiyatlar.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
-            st.error("Ürün veya fiyat bulunamadı. Lütfen 'Başlık Yakalama Hassasiyeti' ayarını değiştirin.")
-
-st.info("""
-**Nasıl Çalışır?**
-1. Sayfanın üstündeki büyük yazıyı 'Ürün İsmi' olarak belirler.
-2. Altındaki tablolarda 'ARM 123' gibi kodları ve '1.250,00' gibi fiyatları arar.
-3. Bulduğu her fiyatı, en son gördüğü büyük başlığın altına yazar.
-""")
+            st.warning("Veri bulunamadı. Lütfen 'Başlık Font Hassasiyeti' değerini düşürerek tekrar deneyin.")
