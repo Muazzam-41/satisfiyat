@@ -15,6 +15,7 @@ def clean_code(text):
 def clean_name(text):
     if not text or pd.isna(text): return ""
     text = str(text).lower()
+    # Sembolleri (●, ▼, ■ vb.) ve gereksiz boşlukları siler, sadece harf/rakam bırakır
     cleaned = re.sub(r'[^a-z0-9ğüşıöç ]', '', text).strip()
     return cleaned
 
@@ -33,153 +34,166 @@ def calculate_net_from_list(price, disc_str):
         return val
     except: return 0
 
-# Session State Yönetimi (Verilerin kaybolmaması için)
-if 's2_manual' not in st.session_state: st.session_state.s2_manual = []
-if 'k3_auto' not in st.session_state: st.session_state.k3_auto = []
-if 'k3_not_found' not in st.session_state: st.session_state.k3_not_found = []
-if 'k3_manual' not in st.session_state: st.session_state.k3_manual = []
+# Hafıza Alanlarını (Session State) Hazırla
+state_keys = [
+    's2_auto', 's2_not_found', 's2_manual', 's2_comp_list',
+    'k3_auto', 'k3_not_found', 'k3_unused_e2', 'k3_manual', 'k3_comp_list'
+]
+for key in state_keys:
+    if key not in st.session_state:
+        st.session_state[key] = [] if 'list' not in key else []
 
 st.title("🛡️ Kurumsal Excel ve Fiyatlandırma Paneli")
 
 # ==============================================================================
-# 1. BÖLÜM: MUHASEBE ENTEGRE FİYAT HESAPLAMA
+# 1. BÖLÜM: MUHASEBE ENTEGRE FİYAT HESAPLAMA (Düzeltildi)
 # ==============================================================================
 st.header("1️⃣ Muhasebe Entegre Fiyat Hesaplama")
-f1_col1, f1_col2 = st.columns(2)
-with f1_col1: ref_f1 = st.file_uploader("Kendi Listeniz (Excel)", type="xlsx", key="f1_ref")
-with f1_col2: svr_f1 = st.file_uploader("SVR Fiyat Listesi (Excel)", type="xlsx", key="f1_svr")
+f1_c1, f1_c2 = st.columns(2)
+with f1_c1: f1_ref = st.file_uploader("Kendi Listeniz (Excel)", type="xlsx", key="f1_r")
+with f1_c2: f1_svr = st.file_uploader("SVR Fiyat Listesi (Excel)", type="xlsx", key="f1_s")
 
-if ref_f1 and svr_f1:
-    df_ref_f1, df_svr_f1 = pd.read_excel(ref_f1), pd.read_excel(svr_f1)
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: ref_code_col = st.selectbox("Kendi Listeniz: Malzeme Kodu", df_ref_f1.columns, key="f1_s1")
-    with c2: svr_code_col = st.selectbox("SVR: Malzeme Kodu", df_svr_f1.columns, key="f1_s2")
-    with c3: svr_name_col = st.selectbox("SVR: Malzeme Adı", df_svr_f1.columns, key="f1_s3")
-    with c4: svr_price_col = st.selectbox("SVR: Birim Fiyatı (Tanımlı)", df_svr_f1.columns, key="f1_s4")
-    disc_input = st.text_input("📉 İskonto (Örn: 50+15)", value="50+15", key="f1_disc")
+if f1_ref and f1_svr:
+    df1_r, df1_s = pd.read_excel(f1_ref), pd.read_excel(f1_svr)
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    with sc1: c1_rc = st.selectbox("Kendi Kod", df1_r.columns, key="f1_sel1")
+    with sc2: c1_sc = st.selectbox("SVR Kod", df1_s.columns, key="f1_sel2")
+    with sc3: c1_sn = st.selectbox("SVR İsim", df1_s.columns, key="f1_sel3")
+    with sc4: c1_sp = st.selectbox("SVR Birim Fiyatı (Tanımlı)", df1_s.columns, key="f1_sel4")
+    f1_disc = st.text_input("📉 İskonto (Örn: 50+15)", value="50+15", key="f1_d")
     
-    if st.button("🚀 Hesaplamayı Başlat", key="f1_btn"):
-        price_map = {clean_code(r[svr_code_col]): (r[svr_price_col], r[svr_name_col]) for _, r in df_svr_f1.iterrows()}
-        results_f1 = []
-        for _, row in df_ref_f1.iterrows():
-            my_c = clean_code(row[ref_code_col])
-            if my_c in price_map:
-                l_price, u_name = price_map[my_c]
-                net = calculate_net_from_list(l_price, disc_input)
-                results_f1.append({
-                    "Malzeme Kodu": row[ref_code_col], "Ürün Adı": u_name,
-                    "Tanımlı Fiyat": round(float(l_price), 2), "Net Fiyat": round(net, 4),
-                    "Barem %12": round(net / 0.88, 4), "40+12 Liste": round(net / 0.528, 4)
+    if st.button("🚀 Fiyatları Hesapla", key="f1_btn"):
+        s_map = {clean_code(r[c1_sc]): (r[c1_sp], r[c1_sn]) for _, r in df1_s.iterrows()}
+        f1_res = []
+        for _, row in df1_r.iterrows():
+            code = clean_code(row[c1_rc])
+            if code in s_map:
+                p, n = s_map[code]
+                net = calculate_net_from_list(p, f1_disc)
+                f1_res.append({
+                    "Kod": row[c1_rc], "Ürün Adı": n, "Liste Fiyatı": round(float(p), 2),
+                    "Net Fiyat": round(net, 4), "Barem %12": round(net/0.88, 4), "40+12 Liste": round(net/0.528, 4)
                 })
-        if results_f1:
-            st.dataframe(pd.DataFrame(results_f1), use_container_width=True)
+        if f1_res:
+            st.dataframe(pd.DataFrame(f1_res), use_container_width=True)
             out1 = io.BytesIO()
-            pd.DataFrame(results_f1).to_excel(out1, index=False)
-            st.download_button("📥 Fiyat Excel'ini İndir", out1.getvalue(), "muhasebe_fiyatlari.xlsx")
+            pd.DataFrame(f1_res).to_excel(out1, index=False)
+            st.download_button("📥 Excel İndir", out1.getvalue(), "fiyat_listesi.xlsx")
 
 st.divider()
 
 # ==============================================================================
-# 2. BÖLÜM: STOK KARŞILAŞTIRMA (Bozulmadı)
+# 2. BÖLÜM: STOK KARŞILAŞTIRMA (Restore Edildi & Düzeltildi)
 # ==============================================================================
-st.header("2️⃣ Stok Karşılaştırma")
-# Bu kısım önceki stabil haliyle bırakılmıştır.
+st.header("2️⃣ Stok Karşılaştırma (Hibrit)")
+f2_c1, f2_c2 = st.columns(2)
+with f2_c1: f2_ref = st.file_uploader("Kendi Reel Stok Excel'iniz", type="xlsx", key="f2_r")
+with f2_c2: f2_comp = st.file_uploader("Karşılaştırılacak Excel", type="xlsx", key="f2_s")
+
+if f2_ref and f2_comp:
+    df2_r, df2_s = pd.read_excel(f2_ref), pd.read_excel(f2_comp)
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    with sc1: r2_c = st.selectbox("Reel: Kod", df2_r.columns, key="f2_sc1")
+    with sc2: r2_n = st.selectbox("Reel: İsim", df2_r.columns, key="f2_sc2")
+    with sc3: c2_c = st.selectbox("Karşı: Kod", df2_s.columns, key="f2_sc3")
+    with sc4: c2_n = st.selectbox("Karşı: İsim", df2_s.columns, key="f2_sc4")
+
+    if st.button("🚀 Stokları Karşılaştır", key="f2_btn"):
+        c_by_code = {clean_code(r[c2_c]): r for _, r in df2_s.iterrows() if pd.notna(r[c2_c])}
+        c_by_name = {clean_name(r[c2_n]): r for _, r in df2_s.iterrows() if pd.notna(r[c2_n])}
+        a_m, n_f = [], []
+        for _, row in df2_r.iterrows():
+            cc, cn = clean_code(row[r2_c]), clean_name(row[r2_n])
+            if cc in c_by_code: a_m.append({**row.to_dict(), "Tip": "KOD", **c_by_code[cc].add_prefix("K_")})
+            elif cn in c_by_name: a_m.append({**row.to_dict(), "Tip": "İSİM", **c_by_name[cn].add_prefix("K_")})
+            else: n_f.append(row.to_dict())
+        st.session_state.s2_auto, st.session_state.s2_not_found = a_m, n_f
+        st.session_state.s2_comp_list = df2_s.to_dict('records')
+
+    if st.session_state.s2_auto or st.session_state.s2_not_found:
+        t2_1, t2_2 = st.tabs(["✅ Eşleşen Stoklar", "🔍 Manuel Stok Asistanı"])
+        with t2_1:
+            full_s2 = st.session_state.s2_auto + st.session_state.s2_manual
+            if full_s2: st.dataframe(pd.DataFrame(full_s2), use_container_width=True)
+        with t2_2:
+            if st.session_state.s2_not_found:
+                sel = st.selectbox("Ürün Seç:", st.session_state.s2_not_found, format_func=lambda x: f"{x[r2_n]}")
+                search = clean_name(sel[r2_n])
+                suggs = sorted(st.session_state.s2_comp_list, key=lambda x: similarity(search, clean_name(x[c2_n])), reverse=True)[:3]
+                for s in suggs:
+                    if st.button(f"Eşleştir: {s[c2_n]}", key=f"s2_m_{s[c2_c]}_{sel[r2_c]}"):
+                        st.session_state.s2_manual.append({**sel, "Tip": "MANUEL", **pd.Series(s).add_prefix("K_")})
+                        st.session_state.s2_not_found.remove(sel); st.rerun()
 
 st.divider()
 
 # ==============================================================================
-# 3. BÖLÜM: KARLILIK ANALİZİ VE MANUEL ASİSTAN (GELİŞTİRİLDİ)
+# 3. BÖLÜM: KARLILIK VE ANALİZE GİRMEYENLER (Geliştirildi)
 # ==============================================================================
 st.header("3️⃣ Karlılık Analizi ve Manuel Eşleştirme")
-st.info("Kıyaslama: Karşı Net / Tanımlı Fiyat <= 1.16 ise fiyatı 1.17 ile çarpar.")
+f3_c1, f3_c2 = st.columns(2)
+with f3_c1: f3_ref = st.file_uploader("1. Excel (Tanımlı Fiyat)", type="xlsx", key="f3_r")
+with f3_c2: f3_comp = st.file_uploader("2. Excel (Karşı Net Fiyat)", type="xlsx", key="f3_s")
 
-col_k1, col_k2 = st.columns(2)
-with col_k1: file_k1 = st.file_uploader("1. Excel (Tanımlı Fiyat)", type="xlsx", key="k3_f1")
-with col_k2: file_k2 = st.file_uploader("2. Excel (Karşı Net Fiyat)", type="xlsx", key="k3_f2")
+if f3_ref and f3_comp:
+    df3_r, df3_s = pd.read_excel(f3_ref), pd.read_excel(f3_comp)
+    c3_1, c3_2, c3_3, c3_4, c3_5 = st.columns(5)
+    with c3_1: k3_c1 = st.selectbox("E1: Kod", df3_r.columns, key="k3_sel1")
+    with c3_2: k3_n1 = st.selectbox("E1: İsim", df3_r.columns, key="k3_sel2")
+    with c3_3: k3_p1 = st.selectbox("E1: Tanımlı Fiyat", df3_r.columns, key="k3_sel3")
+    with c3_4: k3_c2 = st.selectbox("E2: Kod", df3_s.columns, key="k3_sel4")
+    with c3_5: k3_p2 = st.selectbox("E2: Karşı Net Fiyat", df3_s.columns, key="k3_sel5")
 
-if file_k1 and file_k2:
-    df_k1, df_k2 = pd.read_excel(file_k1), pd.read_excel(file_k2)
-    sk1, sk1_n, sk2, sk3, sk4 = st.columns(5)
-    with sk1: k1_c = st.selectbox("E1: Kod", df_k1.columns, key="k3_sel1")
-    with sk1_n: k1_n = st.selectbox("E1: İsim", df_k1.columns, key="k3_sel2")
-    with sk2: k1_p = st.selectbox("E1: Tanımlı Fiyat", df_k1.columns, key="k3_sel3")
-    with sk3: k2_c = st.selectbox("E2: Kod", df_k2.columns, key="k3_sel4")
-    with sk4: k2_p = st.selectbox("E2: Karşı Net Fiyat", df_k2.columns, key="k3_sel5")
-
-    if st.button("🚀 Karlılığı Hesapla", key="k3_btn"):
-        cost_map = {clean_code(r[k2_c]): r[k2_p] for _, r in df_k2.iterrows() if pd.notna(r[k2_c])}
+    if st.button("🚀 Karlılığı Hesapla", key="f3_btn"):
+        # E2'yi hazırla
+        c_map = {clean_code(r[k3_c2]): r[k3_p2] for _, r in df3_s.iterrows() if pd.notna(r[k3_c2])}
+        matched_e2_codes = set()
+        a_r, n_f = [], []
         
-        auto_results, not_found = [], []
-        for _, row in df_k1.iterrows():
-            c = clean_code(row[k1_c])
-            if c in cost_map:
-                p1, p2 = float(row[k1_p]), float(cost_map[c])
+        for _, row in df3_r.iterrows():
+            code = clean_code(row[k3_c1])
+            if code in c_map:
+                p1, p2 = float(row[k3_p1]), float(c_map[code])
                 ratio = p2 / p1 if p1 > 0 else 0
                 new_net = p1 * 1.17 if ratio <= 1.16 else p1
-                auto_results.append({
-                    "Malzeme Kodu": row[k1_c], "Ürün Adı": row[k1_n],
+                a_r.append({
+                    "Malzeme Kodu": row[k3_c1], "Ürün Adı": row[k3_n1],
                     "Eski Tanımlı": round(p1, 2), "Karşı Net": round(p2, 2),
                     "Oran": round(ratio, 4), "YENİ NET": round(new_net, 4),
                     "Barem %12": round(new_net/0.88, 4), "40+12 Liste": round(new_net/0.528, 4),
-                    "Tip": "Otomatik (Kod)"
+                    "Tip": "Otomatik"
                 })
-            else:
-                not_found.append(row.to_dict())
+                matched_e2_codes.add(code)
+            else: n_f.append(row.to_dict())
+            
+        # Analize Girmeyen Karşı Ürünler (E2'de olup E1'de olmayanlar)
+        unused = df3_s[~df3_s[k3_c2].apply(clean_code).isin(matched_e2_codes)]
         
-        st.session_state.k3_auto = auto_results
-        st.session_state.k3_not_found = not_found
-        st.session_state.k3_comp_list = df_k2.to_dict('records')
+        st.session_state.k3_auto, st.session_state.k3_not_found = a_r, n_f
+        st.session_state.k3_unused_e2 = unused.to_dict('records')
+        st.session_state.k3_comp_list = df3_s.to_dict('records')
 
-    # SONUÇ TABLOLARI VE MANUEL ASİSTAN
-    if 'k3_auto' in st.session_state:
-        tab_k1, tab_k2 = st.tabs(["✅ Analiz Sonuçları", "🔍 Manuel Eşleştirme Asistanı"])
-        
-        with tab_k1:
-            total_k3 = st.session_state.k3_auto + st.session_state.k3_manual
-            if total_k3:
-                df_res_k3 = pd.DataFrame(total_k3)
-                st.dataframe(df_res_k3, use_container_width=True)
-                
-                out_k3 = io.BytesIO()
-                df_res_k3.to_excel(out_k3, index=False)
-                st.download_button("📥 Nihai Karlılık Listesini İndir", out_k3.getvalue(), "karlilik_final.xlsx")
-
-        with tab_k2:
+    if st.session_state.k3_auto or st.session_state.k3_not_found:
+        t3_1, t3_2, t3_3 = st.tabs(["✅ Analiz Sonuçları", "🔍 Manuel Asistan", "❗ Karşı Dosyada Eşleşmeyenler"])
+        with t3_1:
+            total3 = st.session_state.k3_auto + st.session_state.k3_manual
+            if total3: st.dataframe(pd.DataFrame(total3), use_container_width=True)
+        with t3_2:
             if st.session_state.k3_not_found:
-                st.write(f"⚠️ Eşleşmeyen {len(st.session_state.k3_not_found)} ürün var.")
-                
-                # Manuel Seçim
-                sel_item = st.selectbox("Eşleşmeyen Ürün Seç:", st.session_state.k3_not_found, 
-                                        format_func=lambda x: f"{x[k1_n]} | {x[k1_c]}")
-                
-                if sel_item:
-                    # Öneriler (İsim benzerliğine göre)
-                    search_n = clean_name(sel_item[k1_n])
-                    suggs = sorted(st.session_state.k3_comp_list, 
-                                  key=lambda x: similarity(search_n, clean_name(x[k2_c] + " " + str(x.get(k2_p, "")))), 
-                                  reverse=True)[:5]
-                    
-                    st.write("💡 **Karşı Dosyadan Öneriler:**")
-                    for s in suggs:
-                        c_text, c_btn = st.columns([4, 1])
-                        c_text.write(f"🔹 {s.get(k2_c, 'Kodsuz')} | Net: {s.get(k2_p, '0')}")
-                        
-                        if c_btn.button("Bununla Eşleştir", key=f"k3_m_{s[k2_c]}_{sel_item[k1_c]}"):
-                            # Hesapla ve ekle
-                            p1, p2 = float(sel_item[k1_p]), float(s[k2_p])
-                            ratio = p2 / p1 if p1 > 0 else 0
-                            new_net = p1 * 1.17 if ratio <= 1.16 else p1
-                            
-                            match_entry = {
-                                "Malzeme Kodu": sel_item[k1_c], "Ürün Adı": sel_item[k1_n],
-                                "Eski Tanımlı": round(p1, 2), "Karşı Net": round(p2, 2),
-                                "Oran": round(ratio, 4), "YENİ NET": round(new_net, 4),
-                                "Barem %12": round(new_net/0.88, 4), "40+12 Liste": round(new_net/0.528, 4),
-                                "Tip": "Manuel Eşleşme"
-                            }
-                            st.session_state.k3_manual.append(match_entry)
-                            st.session_state.k3_not_found.remove(sel_item)
-                            st.success(f"{sel_item[k1_n]} başarıyla eşleşti!")
-                            st.rerun()
-            else:
-                st.success("Tüm ürünler başarıyla analiz edildi!")
+                sel = st.selectbox("Ürün Seç (E1):", st.session_state.k3_not_found, format_func=lambda x: f"{x[k3_n1]}")
+                suggs = sorted(st.session_state.k3_comp_list, key=lambda x: similarity(clean_name(sel[k3_n1]), clean_name(str(x[k3_c2]))), reverse=True)[:3]
+                for s in suggs:
+                    if st.button(f"Eşleştir: {s[k3_c2]}", key=f"k3_m_{s[k3_c2]}_{sel[k3_c1]}"):
+                        p1, p2 = float(sel[k3_p1]), float(s[k3_p2])
+                        ratio = p2/p1 if p1>0 else 0
+                        nn = p1*1.17 if ratio <=1.16 else p1
+                        st.session_state.k3_manual.append({
+                            "Malzeme Kodu": sel[k3_c1], "Ürün Adı": sel[k3_n1], "Eski Tanımlı": round(p1,2),
+                            "Karşı Net": round(p2,2), "Oran": round(ratio,4), "YENİ NET": round(nn,4),
+                            "Barem %12": round(nn/0.88,4), "40+12 Liste": round(nn/0.528,4), "Tip": "Manuel"
+                        })
+                        st.session_state.k3_not_found.remove(sel); st.rerun()
+        with t3_3:
+            if st.session_state.k3_unused_e2:
+                st.warning("Bu ürünler 2. Excel'de var ancak 1. Excel'deki hiçbir ürünle (kodla) eşleşmedi.")
+                st.dataframe(pd.DataFrame(st.session_state.k3_unused_e2), use_container_width=True)
