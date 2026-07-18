@@ -12,9 +12,16 @@ def clean_code(text):
     return re.sub(r'[^a-zA-Z0-9]', '', str(text)).upper()
 
 def clean_name(text):
+    """
+    Ürün ismindeki ●, ▼, ★ gibi tüm sembolleri ve boşlukları temizler.
+    Sadece harf ve rakamları bırakarak eşleştirme yapar.
+    """
     if not text or pd.isna(text): return ""
-    # Sadece harf ve rakamları tut (boşlukları siler, eşleşmeyi kolaylaştırır)
-    return re.sub(r'[^a-zA-Z0-9ğüşıöçĞÜŞİÖÇ]', '', str(text)).lower()
+    text = str(text).lower()
+    # Türkçe karakter dönüşümleri (opsiyonel ama garantici yaklaşım)
+    # Regex: Sadece alfanümerik karakterleri (harf ve rakam) tutar
+    cleaned = re.sub(r'[^a-z0-9ğüşıöç]', '', text)
+    return cleaned
 
 def calculate_net_price(price, disc_str):
     try:
@@ -32,11 +39,9 @@ def calculate_net_price(price, disc_str):
 st.title("🛡️ Profesyonel Excel İşlem ve Karşılaştırma Merkezi")
 
 # ==============================================================================
-# BÖLÜM 1: FİYAT HESAPLAMA (Mevcut Sistem - Korundu)
+# BÖLÜM 1: FİYAT HESAPLAMA (Değişmedi)
 # ==============================================================================
 st.header("1️⃣ Muhasebe Entegre Fiyat Hesaplama")
-st.info("Malzeme Kodu üzerinden fiyat çeker ve barem oluşturur.")
-
 f1_col1, f1_col2 = st.columns(2)
 with f1_col1:
     ref_file_fiyat = st.file_uploader("Kendi Ürün Listenizi Yükleyin", type="xlsx", key="fiyat_ref")
@@ -57,7 +62,6 @@ if ref_file_fiyat and svr_file_fiyat:
     disc_f = st.text_input("İskonto (50+15 vb.)", value="50+15", key="f_isc")
 
     if st.button("🚀 Fiyatları Hesapla"):
-        # Mantık: Kod üzerinden birebir eşleşme
         price_map = {clean_code(r[svr_code_f]): (r[svr_price_f], r[svr_name_f]) for _, r in df_svr_f.iterrows()}
         f_results = []
         for _, row in df_ref_f.iterrows():
@@ -80,10 +84,10 @@ if ref_file_fiyat and svr_file_fiyat:
 st.divider()
 
 # ==============================================================================
-# BÖLÜM 2: HİBRİT STOK KARŞILAŞTIRMA (Yeni Sistem)
+# BÖLÜM 2: HİBRİT STOK KARŞILAŞTIRMA (Özel Karakter Korumalı)
 # ==============================================================================
 st.header("2️⃣ Stok Karşılaştırma (Hibrit Eşleştirme)")
-st.write("Önce Kod, bulunamazsa İsim üzerinden eşleştirme yapar.")
+st.info("Bu bölüm ürün başındaki ●●, ▼, ■ gibi sembolleri otomatik olarak temizleyip eşleştirme yapar.")
 
 col_st1, col_st2 = st.columns(2)
 with col_st1:
@@ -104,9 +108,9 @@ if real_stock_file and compare_stock_file:
 
     if st.button("🚀 Stokları Karşılaştır"):
         try:
-            # 2. Excel'i hafızaya al (Kod ve İsim haritaları)
-            comp_by_code = {clean_code(r[c_code_col]): r for _, r in df_comp.iterrows() if clean_code(r[c_code_col])}
-            comp_by_name = {clean_name(r[c_name_col]): r for _, r in df_comp.iterrows() if clean_name(r[c_name_col])}
+            # 2. Excel'i hafızaya alırken isimleri sembollerden temizleyerek haritalandır
+            comp_by_code = {clean_code(r[c_code_col]): r for _, r in df_comp.iterrows() if pd.notna(r[c_code_col])}
+            comp_by_name = {clean_name(r[c_name_col]): r for _, r in df_comp.iterrows() if pd.notna(r[c_name_col])}
 
             matched_stock = []
             not_found_stock = []
@@ -118,50 +122,48 @@ if real_stock_file and compare_stock_file:
                 r_code_c = clean_code(r_code_raw)
                 r_name_c = clean_name(r_name_raw)
 
-                # 1. Kod ile eşleştirme denemesi
+                # 1. Kod ile eşleştirme
                 if r_code_c and r_code_c in comp_by_code:
                     match_row = comp_by_code[r_code_c]
-                    matched_stock.append({
-                        "Reel Kod": r_code_raw, "Reel İsim": r_name_raw,
-                        "Eşleşen Bilgi (2. Excel)": match_row.to_dict(),
-                        "Eşleşme Türü": "KOD İLE"
-                    })
+                    res_item = {"Reel Kod": r_code_raw, "Reel İsim": r_name_raw, "Eşleşme Türü": "KOD İLE"}
+                    # İkinci Excel'deki tüm sütunları ekle
+                    for col in df_comp.columns:
+                        res_item[f"Karşı_Dosya_{col}"] = match_row[col]
+                    matched_stock.append(res_item)
                 
-                # 2. Kodla bulunamadıysa İsim ile deneme
+                # 2. İsim ile eşleştirme (Temizlenmiş isimler üzerinden)
                 elif r_name_c and r_name_c in comp_by_name:
                     match_row = comp_by_name[r_name_c]
-                    matched_stock.append({
-                        "Reel Kod": r_code_raw, "Reel İsim": r_name_raw,
-                        "Eşleşen Bilgi (2. Excel)": match_row.to_dict(),
-                        "Eşleşme Türü": "İSİM İLE"
-                    })
+                    res_item = {"Reel Kod": r_code_raw, "Reel İsim": r_name_raw, "Eşleşme Türü": "İSİM İLE (Semboller Temizlendi)"}
+                    for col in df_comp.columns:
+                        res_item[f"Karşı_Dosya_{col}"] = match_row[col]
+                    matched_stock.append(res_item)
                 
-                # 3. İkisiyle de bulunamadı
+                # 3. Bulunamadı
                 else:
                     not_found_stock.append({"Kod": r_code_raw, "İsim": r_name_raw})
 
-            # Sonuçları Göster
+            # Sonuç Tabloları
             tab_ok, tab_fail = st.tabs(["✅ Eşleşenler", "❌ Bulunamayanlar"])
             
             with tab_ok:
                 if matched_stock:
-                    # Daha temiz bir tablo görünümü için düzenleme
-                    st.success(f"{len(matched_stock)} ürün başarıyla eşleşti.")
-                    # Sözlük yapısını tabloya yay
-                    display_df = pd.json_normalize(matched_stock)
+                    display_df = pd.DataFrame(matched_stock)
+                    st.success(f"✅ Toplam {len(display_df)} ürün sembol hassasiyetiyle eşleşti.")
                     st.dataframe(display_df, use_container_width=True)
                     
                     out_st = io.BytesIO()
                     with pd.ExcelWriter(out_st, engine='openpyxl') as writer:
                         display_df.to_excel(writer, index=False)
-                    st.download_button("📥 Eşleşen Stok Listesini İndir", out_st.getvalue(), "eslesmis_stok.xlsx")
+                    st.download_button("📥 Eşleşmiş Listeyi İndir", out_st.getvalue(), "hibrit_stok_sonuc.xlsx")
                 else:
-                    st.warning("Hiçbir ürün eşleşmedi.")
+                    st.warning("Eşleşen ürün bulunamadı.")
 
             with tab_fail:
                 if not_found_stock:
-                    st.error(f"{len(not_found_stock)} ürün hiçbir şekilde bulunamadı.")
-                    st.dataframe(pd.DataFrame(not_found_stock), use_container_width=True)
+                    fail_df = pd.DataFrame(not_found_stock)
+                    st.error(f"❌ {len(fail_df)} ürün hiçbir şekilde eşleşmedi.")
+                    st.dataframe(fail_df, use_container_width=True)
 
         except Exception as e:
-            st.error(f"Hata: {e}")
+            st.error(f"Hata oluştu: {e}")
