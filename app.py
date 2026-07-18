@@ -3,24 +3,24 @@ import pandas as pd
 import io
 
 # Sayfa Yapılandırması
-st.set_page_config(page_title="Hatasız Excel Eşleştirici", layout="wide")
+st.set_page_config(page_title="Muhasebe Entegre Fiyat Botu", layout="wide")
 
-def calculate_chain_discount(price, disc_str):
-    """Zincir iskontoyu matematiksel olarak uygular."""
+def calculate_net_price(price, disc_str):
+    """Girdiğiniz iskontoyu J sütununa uygular ve NET fiyatı bulur."""
     try:
         val = float(price)
         if not disc_str or disc_str == "0":
-            return round(val, 2)
+            return val
         
         discounts = [float(d.strip()) for d in str(disc_str).split('+') if d.strip()]
         for d in discounts:
             val = val * (1 - d / 100)
-        return round(val, 2)
+        return val
     except:
         return 0
 
-st.title("📊 Profesyonel Excel Fiyat Karşılaştırma")
-st.write("Boş satırları ayıklar, sadece dolu hücreleri karşılaştırır.")
+st.title("🚀 Muhasebe Entegre: Ters İskonto ve Fiyat Botu")
+st.write("Net fiyattan yola çıkarak, belirli iskontolarla aynı sonucu verecek 'Sanal Liste Fiyatları' oluşturur.")
 
 # Dosya Yükleme Alanları
 col1, col2 = st.columns(2)
@@ -31,96 +31,85 @@ with col1:
 
 with col2:
     st.subheader("2. Güncel Fiyat Listesi (SVR)")
-    price_file = st.file_uploader("Tedarikçi Fiyat Excel'ini yükleyin", type="xlsx", key="price")
+    price_file = st.file_uploader("Tedarikçi Fiyat Excel'ini (SVR) yükleyin", type="xlsx", key="price")
 
-discount_input = st.text_input("📉 Uygulanacak İskonto (Örn: 50+15)", value="50+15")
+discount_input = st.text_input("📉 J Sütununa Uygulanacak Ana İskonto (Örn: 50+15)", value="50+15")
 
-if st.button("🚀 EŞLEŞTİRMEYİ BAŞLAT"):
+if st.button("🚀 HESAPLAMAYI VE TERS EŞLEŞTİRMEYİ BAŞLAT"):
     if ref_file and price_file:
         try:
-            # 1. Dosyaları oku
+            # 1. Dosyaları oku ve temizle
             df_ref = pd.read_excel(ref_file)
             df_price = pd.read_excel(price_file)
 
-            # --- TEMİZLİK AŞAMASI ---
-            # İsim sütunu boş olan satırları tamamen sil (NAN engelleme)
+            # Boş satırları ayıkla
             df_ref = df_ref.dropna(subset=[df_ref.columns[0]])
             df_price = df_price.dropna(subset=[df_price.columns[2]])
 
-            # Fiyat Listesi Sözlüğü Oluştur (İsim -> Fiyat)
-            # C sütunu (İsim) = index 2, J sütunu (Fiyat) = index 9
+            # Fiyat Listesi Sözlüğü (C: İsim, J: Fiyat)
             price_map = {}
             for _, row in df_price.iterrows():
                 try:
                     val_name = row.iloc[2]
                     val_price = row.iloc[9]
-                    
-                    # Eğer isim veya fiyat gerçekten boş değilse haritaya ekle
                     if pd.notna(val_name) and pd.notna(val_price):
-                        m_adi = str(val_name).strip().lower()
-                        price_map[m_adi] = val_price
+                        price_map[str(val_name).strip().lower()] = float(val_price)
                 except:
                     continue
 
-            # 2. Karşılaştırma
+            # 2. Hesaplama Döngüsü
             matched_results = []
             unmatched_results = []
 
             for _, row in df_ref.iterrows():
-                val_ref_name = row.iloc[0]
-                
-                # Sadece dolu satırları işle
-                if pd.notna(val_ref_name):
-                    ref_name = str(val_ref_name).strip()
-                    ref_name_lower = ref_name.lower()
+                ref_name = str(row.iloc[0]).strip()
+                ref_name_lower = ref_name.lower()
 
-                    if ref_name_lower in price_map:
-                        liste_fiyati = price_map[ref_name_lower]
-                        net_fiyat = calculate_chain_discount(liste_fiyati, discount_input)
-                        
-                        matched_results.append({
-                            "Ürün Adı": ref_name,
-                            "Liste Fiyatı (J)": liste_fiyati,
-                            "İskonto": discount_input,
-                            "Net Fiyat": net_fiyat
-                        })
-                    else:
-                        # Gerçekten bulunamayan ama ismi dolu olan ürün
-                        unmatched_results.append({
-                            "Ürün Adı": ref_name,
-                            "Durum": "Fiyat Listesinde Yok"
-                        })
+                if ref_name_lower in price_map:
+                    original_j_price = price_map[ref_name_lower]
+                    
+                    # A - Gerçek Net Fiyatı Bul
+                    net_fiyat = calculate_net_price(original_j_price, discount_input)
+                    
+                    # B - %12 İskonto yapıldığında bu net fiyatı verecek Liste Fiyatı
+                    # x * 0.88 = Net -> x = Net / 0.88
+                    barem_12_liste = net_fiyat / 0.88
+                    
+                    # C - %40 + %12 iskonto yapıldığında bu net fiyatı verecek Liste Fiyatı
+                    # x * 0.60 * 0.88 = Net -> x = Net / (0.60 * 0.88)
+                    barem_40_12_liste = net_fiyat / (0.60 * 0.88)
+                    
+                    matched_results.append({
+                        "Ürün Adı": ref_name,
+                        "SVR Liste Fiyatı (J)": round(original_j_price, 4),
+                        "Net Fiyat": round(net_fiyat, 4),
+                        "Barem Liste Fiyatı (Net / 0.88)": round(barem_12_liste, 4),
+                        "40+12 Liste Fiyatı (Net / 0.528)": round(barem_40_12_liste, 4)
+                    })
+                else:
+                    unmatched_results.append({"Ürün Adı": ref_name, "Durum": "Fiyat Listesinde Yok"})
 
             # 3. GÖRSELLEŞTİRME
-            tab1, tab2 = st.tabs(["✅ Eşleşen Ürünler", "❌ Bulunamayan Ürünler"])
+            tab1, tab2 = st.tabs(["✅ Hesaplananlar", "❌ Bulunamayanlar"])
 
             with tab1:
                 if matched_results:
-                    res_matched_df = pd.DataFrame(matched_results)
-                    st.success(f"{len(res_matched_df)} ürün başarıyla eşleşti.")
-                    st.dataframe(res_matched_df, use_container_width=True)
+                    res_df = pd.DataFrame(matched_results)
+                    st.success(f"{len(res_df)} Ürün için ters hesaplama yapıldı.")
+                    st.dataframe(res_df, use_container_width=True)
                     
-                    output_ok = io.BytesIO()
-                    with pd.ExcelWriter(output_ok, engine='openpyxl') as writer:
-                        res_matched_df.to_excel(writer, index=False)
-                    st.download_button("📥 Excel İndir", output_ok.getvalue(), "guncel_fiyatlar.xlsx")
-                else:
-                    st.warning("Eşleşen ürün bulunamadı.")
+                    # Excel Çıktısı
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        res_df.to_excel(writer, index=False)
+                    st.download_button("📥 Muhasebe Excel'ini İndir", output.getvalue(), "muhasebe_fiyat_listesi.xlsx")
 
             with tab2:
                 if unmatched_results:
-                    res_unmatched_df = pd.DataFrame(unmatched_results)
-                    st.error(f"{len(res_unmatched_df)} ürün listelerde uyuşmuyor.")
-                    st.dataframe(res_unmatched_df, use_container_width=True)
-                    
-                    output_fail = io.BytesIO()
-                    with pd.ExcelWriter(output_fail, engine='openpyxl') as writer:
-                        res_unmatched_df.to_excel(writer, index=False)
-                    st.download_button("📥 Eksikler Listesini İndir", output_fail.getvalue(), "eksik_urunler.xlsx")
-                else:
-                    st.success("Tüm ürünler başarıyla eşleşti!")
+                    st.error(f"{len(unmatched_results)} ürün eşleşmedi.")
+                    st.table(pd.DataFrame(unmatched_results))
 
         except Exception as e:
-            st.error(f"Hata oluştu: {e}")
+            st.error(f"Hata: {e}")
     else:
-        st.warning("İşlem için iki dosyayı da yükleyin.")
+        st.warning("Lütfen iki dosyayı da yükleyin.")
