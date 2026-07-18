@@ -3,7 +3,7 @@ import pandas as pd
 import io
 
 # Sayfa Yapılandırması
-st.set_page_config(page_title="Gelişmiş Excel Eşleştirici", layout="wide")
+st.set_page_config(page_title="Hatasız Excel Eşleştirici", layout="wide")
 
 def calculate_chain_discount(price, disc_str):
     """Zincir iskontoyu matematiksel olarak uygular."""
@@ -20,7 +20,7 @@ def calculate_chain_discount(price, disc_str):
         return 0
 
 st.title("📊 Profesyonel Excel Fiyat Karşılaştırma")
-st.write("Ürün Adı üzerinden eşleştirme yapar, J sütunundan fiyatı çeker ve raporlar.")
+st.write("Boş satırları ayıklar, sadece dolu hücreleri karşılaştırır.")
 
 # Dosya Yükleme Alanları
 col1, col2 = st.columns(2)
@@ -42,76 +42,85 @@ if st.button("🚀 EŞLEŞTİRMEYİ BAŞLAT"):
             df_ref = pd.read_excel(ref_file)
             df_price = pd.read_excel(price_file)
 
+            # --- TEMİZLİK AŞAMASI ---
+            # İsim sütunu boş olan satırları tamamen sil (NAN engelleme)
+            df_ref = df_ref.dropna(subset=[df_ref.columns[0]])
+            df_price = df_price.dropna(subset=[df_price.columns[2]])
+
             # Fiyat Listesi Sözlüğü Oluştur (İsim -> Fiyat)
-            # Görseldeki yapı: C sütunu (İsim) = index 2, J sütunu (Fiyat) = index 9
+            # C sütunu (İsim) = index 2, J sütunu (Fiyat) = index 9
             price_map = {}
             for _, row in df_price.iterrows():
                 try:
-                    m_adi = str(row.iloc[2]).strip().lower() # Malzeme Adı (C)
-                    b_fiyat = row.iloc[9]                   # Birim Fiyatı (J)
-                    price_map[m_adi] = b_fiyat
+                    val_name = row.iloc[2]
+                    val_price = row.iloc[9]
+                    
+                    # Eğer isim veya fiyat gerçekten boş değilse haritaya ekle
+                    if pd.notna(val_name) and pd.notna(val_price):
+                        m_adi = str(val_name).strip().lower()
+                        price_map[m_adi] = val_price
                 except:
                     continue
 
-            # 2. Karşılaştırma ve Listeleme
+            # 2. Karşılaştırma
             matched_results = []
             unmatched_results = []
 
             for _, row in df_ref.iterrows():
-                # Kendi listenizdeki ilk sütun isim varsayılıyor (Gerekirse iloc[0] değişebilir)
-                ref_name = str(row.iloc[0]).strip() 
-                ref_name_lower = ref_name.lower()
+                val_ref_name = row.iloc[0]
+                
+                # Sadece dolu satırları işle
+                if pd.notna(val_ref_name):
+                    ref_name = str(val_ref_name).strip()
+                    ref_name_lower = ref_name.lower()
 
-                if ref_name_lower in price_map:
-                    liste_fiyati = price_map[ref_name_lower]
-                    net_fiyat = calculate_chain_discount(liste_fiyati, discount_input)
-                    
-                    matched_results.append({
-                        "Ürün Adı": ref_name,
-                        "Liste Fiyatı (J)": liste_fiyati,
-                        "İskonto": discount_input,
-                        "Net Fiyat": net_fiyat
-                    })
-                else:
-                    unmatched_results.append({
-                        "Ürün Adı": ref_name,
-                        "Durum": "Fiyat Listesinde Bulunamadı"
-                    })
+                    if ref_name_lower in price_map:
+                        liste_fiyati = price_map[ref_name_lower]
+                        net_fiyat = calculate_chain_discount(liste_fiyati, discount_input)
+                        
+                        matched_results.append({
+                            "Ürün Adı": ref_name,
+                            "Liste Fiyatı (J)": liste_fiyati,
+                            "İskonto": discount_input,
+                            "Net Fiyat": net_fiyat
+                        })
+                    else:
+                        # Gerçekten bulunamayan ama ismi dolu olan ürün
+                        unmatched_results.append({
+                            "Ürün Adı": ref_name,
+                            "Durum": "Fiyat Listesinde Yok"
+                        })
 
-            # 3. GÖRSELLEŞTİRME VE RAPORLAMA
+            # 3. GÖRSELLEŞTİRME
             tab1, tab2 = st.tabs(["✅ Eşleşen Ürünler", "❌ Bulunamayan Ürünler"])
 
             with tab1:
                 if matched_results:
                     res_matched_df = pd.DataFrame(matched_results)
-                    st.success(f"{len(res_matched_df)} ürün başarıyla güncellendi.")
+                    st.success(f"{len(res_matched_df)} ürün başarıyla eşleşti.")
                     st.dataframe(res_matched_df, use_container_width=True)
                     
-                    # İndirme Butonu (Eşleşenler)
                     output_ok = io.BytesIO()
                     with pd.ExcelWriter(output_ok, engine='openpyxl') as writer:
                         res_matched_df.to_excel(writer, index=False)
-                    st.download_button("📥 Güncel Fiyat Listesini İndir", output_ok.getvalue(), "guncel_fiyatlar.xlsx")
+                    st.download_button("📥 Excel İndir", output_ok.getvalue(), "guncel_fiyatlar.xlsx")
                 else:
-                    st.warning("Hiçbir ürün eşleşmedi.")
+                    st.warning("Eşleşen ürün bulunamadı.")
 
             with tab2:
                 if unmatched_results:
                     res_unmatched_df = pd.DataFrame(unmatched_results)
-                    st.error(f"{len(res_unmatched_df)} ürün fiyat listesinde bulunamadı.")
-                    st.write("Aşağıdaki ürünlerin isimlerini kontrol etmeniz gerekebilir:")
-                    st.table(res_unmatched_df)
+                    st.error(f"{len(res_unmatched_df)} ürün listelerde uyuşmuyor.")
+                    st.dataframe(res_unmatched_df, use_container_width=True)
                     
-                    # İndirme Butonu (Bulunamayanlar)
                     output_fail = io.BytesIO()
                     with pd.ExcelWriter(output_fail, engine='openpyxl') as writer:
                         res_unmatched_df.to_excel(writer, index=False)
-                    st.download_button("📥 Bulunamayanlar Listesini İndir", output_fail.getvalue(), "eksik_urunler.xlsx")
+                    st.download_button("📥 Eksikler Listesini İndir", output_fail.getvalue(), "eksik_urunler.xlsx")
                 else:
-                    st.balloons()
-                    st.success("Tebrikler! Listenizdeki tüm ürünler fiyat listesinde bulundu.")
+                    st.success("Tüm ürünler başarıyla eşleşti!")
 
         except Exception as e:
-            st.error(f"Hata: {e}. Lütfen Excel sütunlarının (C ve J) görseldeki gibi olduğundan emin olun.")
+            st.error(f"Hata oluştu: {e}")
     else:
-        st.warning("İşlem için iki Excel dosyasını da yüklemelisiniz.")
+        st.warning("İşlem için iki dosyayı da yükleyin.")
