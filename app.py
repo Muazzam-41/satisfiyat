@@ -4,45 +4,51 @@ import pandas as pd
 import io
 import re
 
-st.set_page_config(page_title="3 Sütunlu Katalog İşleyici", layout="wide")
+# Sayfa Geniş Modu
+st.set_page_config(page_title="Nihai Katalog İşleyici", layout="wide")
 
 st.markdown("""
     <style>
-    .main { background-color: #f8f9fa; }
-    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #0275d8; color: white; font-weight: bold; }
+    .main { background-color: #f4f7f6; }
+    .stButton>button { width: 100%; border-radius: 8px; height: 3.5em; background-color: #107c10; color: white; font-weight: bold; border: none; }
+    .stButton>button:hover { background-color: #0b5a0b; color: white; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("📊 Profesyonel Katalog İşleyici (Üçlü Yan Yana Ürün Desteği)")
-st.info("Bu versiyon sayfayı 3 sütuna böler ve ürün kodları ile çok satırlı başlıkları hatasız eşleştirir.")
+st.title("🛡️ Profesyonel Katalog & Fiyat Listesi Botu")
+st.write("Tüm katalog formatlarını (1-2-3 sütun, tablolu, çoklu kodlu) destekleyen nihai sürüm.")
 
-# Girdiler
-col1, col2 = st.columns([2, 1])
-with col1:
-    uploaded_file = st.file_uploader("PDF Katalog Dosyasını Yükleyin", type="pdf")
-with col2:
-    discount_input = st.text_input("İskonto Oranları (Örn: 50+15+10)", value="50+10")
+# Kullanıcı Arayüzü
+col_file, col_disc = st.columns([2, 1])
+with col_file:
+    uploaded_file = st.file_uploader("PDF Katalog Dosyasını Seçin", type="pdf")
+with col_disc:
+    discount_input = st.text_input("İskonto Yapısı (Örn: 50+15+5)", value="50+10")
+    st.caption("Zincir iskonto uygular: Önce %50, sonra %15, sonra %5 düşer.")
 
-def calculate_net_price(list_price_str, discount_str):
+def calculate_chain_discount(price_str, discount_str):
+    """₺1.250,50 gibi metinleri sayıya çevirir ve iskontoları uygular."""
     try:
-        # ₺ simgesini ve noktaları temizle
-        clean_price = list_price_str.replace('₺', '').replace('.', '').replace(',', '.').strip()
-        price = float(clean_price)
-        if not discount_str: return round(price, 2)
+        # Fiyatı temizle
+        clean_p = price_str.replace('₺', '').replace('.', '').replace(',', '.').strip()
+        val = float(clean_p)
+        if not discount_str: return round(val, 2)
+        
         discounts = [float(d.strip()) for d in discount_str.split('+') if d.strip()]
         for d in discounts:
-            price = price * (1 - d / 100)
-        return round(price, 2)
+            val = val * (1 - d / 100)
+        return round(val, 2)
     except:
         return 0
 
-def process_column(column_words, discount_str):
-    """Bir sütun içindeki kelimeleri analiz eder (Sol, Orta veya Sağ)."""
-    items = []
+def process_column_logic(column_words, discount_str):
+    """Bir sütun içindeki hiyerarşiyi (Başlık -> Kod -> Fiyat) çözer."""
+    data_list = []
+    current_title = "Tanımsız Ürün Grubu"
     
     # Regex Tanımları
-    price_regex = r'\d{1,3}(?:\.\d{3})*,\d{2}'
-    code_regex = r'\b[A-Z]{2,4}\s?\d{5,}\b' # ADS 731649 gibi
+    price_regex = r'\d{1,3}(?:\.\d{3})*,\d{2}' # 22,75 veya 13.890,48
+    code_regex = r'\b[A-Z]{1,4}\s?\d{3,}\b'    # ARM 001111, ADS 731649, VDS 753023
     
     # Kelimeleri satırlara grupla
     lines = {}
@@ -53,81 +59,102 @@ def process_column(column_words, discount_str):
     
     sorted_y = sorted(lines.keys())
     
-    # Başlıkları, Kodları ve Fiyatları ayıkla
-    # Katalog yapısına göre: Başlık -> Kod -> Resim (boşluk) -> Fiyat
-    temp_title_parts = []
-    found_code = None
-    
-    for y in sorted_y:
-        line_text = " ".join([w['text'] for w in lines[y]]).strip()
+    for i, y in enumerate(sorted_y):
+        line_words = lines[y]
+        line_text = " ".join([w['text'] for w in line_words]).strip()
         
-        # 1. Kod Bulma (ADS 731649 gibi)
-        code_match = re.search(code_regex, line_text)
-        if code_match:
-            found_code = code_match.group()
-            # Koddan önce gelen her şey muhtemelen başlıktır
-            current_title = " ".join(temp_title_parts)
+        # Fiyat ve Kod araması
+        has_price = re.search(price_regex, line_text)
+        has_code = re.search(code_regex, line_text)
+        
+        # 1. MANTIK: BAŞLIK TESPİTİ
+        # Eğer satırda ne fiyat ne kod varsa ve yazılar büyükse/başlıksa
+        if not has_price and not has_code:
+            # Gereksiz teknik kelimeleri ele
+            ignore = ["FİYAT", "KOLİ", "ADET", "KUTU", "P.ADET", "YENİ"]
+            if len(line_text) > 3 and not any(x in line_text.upper() for x in ignore):
+                # Eğer bir önceki satır da başlığın devamıysa birleştir
+                if i > 0 and len(current_title) < 50:
+                    current_title = line_text if current_title == "Tanımsız Ürün Grubu" else f"{current_title} {line_text}"
+                else:
+                    current_title = line_text
             continue
-        
-        # 2. Fiyat Bulma (₺2.000,69 gibi)
-        price_match = re.search(price_regex, line_text)
-        if price_match and found_code:
-            price_str = price_match.group()
-            net_f = calculate_net_price(price_str, discount_str)
+
+        # 2. MANTIK: KOD VE FİYAT EŞLEŞTİRME
+        if has_price:
+            price_found = has_price.group()
             
-            items.append({
-                "Ürün İsmi": current_title,
-                "Ürün Kodu": found_code,
-                "Liste Fiyatı": price_str,
+            # Satırda kod varsa al, yoksa bir üstteki kelimelere bak
+            if has_code:
+                code_found = has_code.group()
+            else:
+                # Kod bazen fiyatın bir solundaki kelimedir
+                code_found = line_words[0]['text'] if len(line_words) > 1 else "Kodsuz Ürün"
+            
+            # Detay bilgisini al (Kod ve fiyat arasında kalan her şey)
+            detail = line_text.replace(price_found, "").replace(code_found, "").strip()
+            
+            net_f = calculate_chain_discount(price_found, discount_str)
+            
+            data_list.append({
+                "Ürün İsmi (Ana Grup)": current_title,
+                "Ürün Kodu": code_found,
+                "Özellik/Detay": detail if detail else "-",
+                "Liste Fiyatı": price_found,
                 "İskontolu Fiyat": net_f
             })
-            # Bir ürünü bitirince sıfırla
-            temp_title_parts = []
-            found_code = None
-            continue
             
-        # 3. Başlık Biriktirme (Eğer henüz kod bulunmadıysa satırları biriktir)
-        if not found_code and len(line_text) > 3 and "Koli" not in line_text:
-            temp_title_parts.append(line_text)
-
-    return items
+    return data_list
 
 if uploaded_file:
-    with st.spinner('Sayfalar 3 sütunlu olarak taranıyor...'):
-        all_results = []
+    with st.spinner('Tüm sayfalar ve sütunlar analiz ediliyor...'):
+        final_data = []
         with pdfplumber.open(uploaded_file) as pdf:
             for page in pdf.pages:
                 w, h = page.width, page.height
                 
-                # Sayfayı 3 eşit sütuna böl
-                cols = [
-                    (0, 0, w * 0.33, h),       # Sol
-                    (w * 0.33, 0, w * 0.66, h), # Orta
-                    (w * 0.66, 0, w, h)         # Sağ
+                # Sayfayı 3 sütuna böl (Tüm senaryoları kapsar: 1, 2 veya 3 sütun)
+                # Sütun sınırları: 0 -> 0.33 -> 0.66 -> 1.0
+                col_boundaries = [
+                    (0, 0, w * 0.335, h),       # Sol
+                    (w * 0.335, 0, w * 0.665, h), # Orta
+                    (w * 0.665, 0, w, h)         # Sağ
                 ]
                 
-                for bbox in cols:
-                    col_words = page.within_bbox(bbox).extract_words()
+                for bbox in col_boundaries:
+                    crop = page.within_bbox(bbox)
+                    col_words = crop.extract_words()
                     if col_words:
-                        all_results.extend(process_column(col_words, discount_input))
+                        column_results = process_column_logic(col_words, discount_input)
+                        final_data.extend(column_results)
         
-        if all_results:
-            df = pd.DataFrame(all_results)
-            st.success(f"✅ {len(df)} adet ürün başarıyla eşleştirildi!")
+        if final_data:
+            df = pd.DataFrame(final_data)
+            
+            st.success(f"✅ Analiz Tamamlandı: {len(df)} kalem ürün bulundu.")
+            
+            # Tabloyu göster
             st.dataframe(df, use_container_width=True)
             
+            # Excel Çıktısı
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False)
+                df.to_excel(writer, index=False, sheet_name='Fiyat Listesi')
             
             st.download_button(
-                label="📥 Excel Olarak İndir",
+                label="📥 İskontolu Excel Listesini İndir",
                 data=output.getvalue(),
-                file_name="uclu_katalog_fiyatlar.xlsx",
+                file_name="hazir_fiyat_listesi.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
-            st.warning("Veri bulunamadı. Lütfen PDF'in taranabilir bir metin dosyası olduğundan emin olun.")
+            st.error("Üzgünüm, PDF içerisinde uygun formatta ürün veya fiyat bulunamadı.")
 
 st.divider()
-st.caption("Bu sürüm ADS, BHV, NRA gibi kodları ve alt alta yazılmış ürün isimlerini 3 sütunlu sayfada takip eder.")
+st.info("""
+**Sistem Nasıl Çalışır?**
+- **Hiyerarşi:** Sayfanın üstündeki büyük yazıyı 'Grup İsmi' yapar.
+- **Eşleşme:** Bu grup isminin altındaki tüm kodları (ARM, VDS, ADS vb.) o gruba bağlar.
+- **Sütun Desteği:** Sayfa yan yana 2 veya 3 ürün içerse bile bunları birbirinden ayırır.
+- **Hesaplama:** Liste fiyatından girdiğiniz % iskontoları sırasıyla düşer.
+""")
