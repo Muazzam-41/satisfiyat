@@ -15,7 +15,6 @@ def clean_code(text):
 def clean_name(text):
     if not text or pd.isna(text): return ""
     text = str(text).lower()
-    # Sembolleri (●, ▼, ■ vb.) ve gereksiz boşlukları siler, sadece harf/rakam bırakır
     cleaned = re.sub(r'[^a-z0-9ğüşıöç ]', '', text).strip()
     return cleaned
 
@@ -41,12 +40,12 @@ state_keys = [
 ]
 for key in state_keys:
     if key not in st.session_state:
-        st.session_state[key] = [] if 'list' not in key else []
+        st.session_state[key] = []
 
 st.title("🛡️ Kurumsal Excel ve Fiyatlandırma Paneli")
 
 # ==============================================================================
-# 1. BÖLÜM: MUHASEBE ENTEGRE FİYAT HESAPLAMA (Düzeltildi)
+# 1. BÖLÜM: MUHASEBE ENTEGRE FİYAT HESAPLAMA
 # ==============================================================================
 st.header("1️⃣ Muhasebe Entegre Fiyat Hesaplama")
 f1_c1, f1_c2 = st.columns(2)
@@ -83,7 +82,7 @@ if f1_ref and f1_svr:
 st.divider()
 
 # ==============================================================================
-# 2. BÖLÜM: STOK KARŞILAŞTIRMA (Restore Edildi & Düzeltildi)
+# 2. BÖLÜM: STOK KARŞILAŞTIRMA (Bozulmadı)
 # ==============================================================================
 st.header("2️⃣ Stok Karşılaştırma (Hibrit)")
 f2_c1, f2_c2 = st.columns(2)
@@ -117,7 +116,7 @@ if f2_ref and f2_comp:
             if full_s2: st.dataframe(pd.DataFrame(full_s2), use_container_width=True)
         with t2_2:
             if st.session_state.s2_not_found:
-                sel = st.selectbox("Ürün Seç:", st.session_state.s2_not_found, format_func=lambda x: f"{x[r2_n]}")
+                sel = st.selectbox("Ürün Seç:", st.session_state.s2_not_found, format_func=lambda x: f"{x[r2_n]}", key="s2_sel_box")
                 search = clean_name(sel[r2_n])
                 suggs = sorted(st.session_state.s2_comp_list, key=lambda x: similarity(search, clean_name(x[c2_n])), reverse=True)[:3]
                 for s in suggs:
@@ -128,7 +127,7 @@ if f2_ref and f2_comp:
 st.divider()
 
 # ==============================================================================
-# 3. BÖLÜM: KARLILIK VE ANALİZE GİRMEYENLER (Geliştirildi)
+# 3. BÖLÜM: KARLILIK VE ANALİZE GİRMEYENLER (Excel İndirme Eklendi)
 # ==============================================================================
 st.header("3️⃣ Karlılık Analizi ve Manuel Eşleştirme")
 f3_c1, f3_c2 = st.columns(2)
@@ -145,7 +144,6 @@ if f3_ref and f3_comp:
     with c3_5: k3_p2 = st.selectbox("E2: Karşı Net Fiyat", df3_s.columns, key="k3_sel5")
 
     if st.button("🚀 Karlılığı Hesapla", key="f3_btn"):
-        # E2'yi hazırla
         c_map = {clean_code(r[k3_c2]): r[k3_p2] for _, r in df3_s.iterrows() if pd.notna(r[k3_c2])}
         matched_e2_codes = set()
         a_r, n_f = [], []
@@ -167,21 +165,28 @@ if f3_ref and f3_comp:
             else: n_f.append(row.to_dict())
             
         # Analize Girmeyen Karşı Ürünler (E2'de olup E1'de olmayanlar)
-        unused = df3_s[~df3_s[k3_c2].apply(clean_code).isin(matched_e2_codes)]
+        unused_df = df3_s[~df3_s[k3_c2].apply(clean_code).isin(matched_e2_codes)]
         
         st.session_state.k3_auto, st.session_state.k3_not_found = a_r, n_f
-        st.session_state.k3_unused_e2 = unused.to_dict('records')
+        st.session_state.k3_unused_e2 = unused_df.to_dict('records')
         st.session_state.k3_comp_list = df3_s.to_dict('records')
 
-    if st.session_state.k3_auto or st.session_state.k3_not_found:
+    if st.session_state.k3_auto or st.session_state.k3_not_found or st.session_state.k3_unused_e2:
         t3_1, t3_2, t3_3 = st.tabs(["✅ Analiz Sonuçları", "🔍 Manuel Asistan", "❗ Karşı Dosyada Eşleşmeyenler"])
         with t3_1:
             total3 = st.session_state.k3_auto + st.session_state.k3_manual
-            if total3: st.dataframe(pd.DataFrame(total3), use_container_width=True)
+            if total3: 
+                df_res_total = pd.DataFrame(total3)
+                st.dataframe(df_res_total, use_container_width=True)
+                out3_res = io.BytesIO()
+                df_res_total.to_excel(out3_res, index=False)
+                st.download_button("📥 Analiz Sonuçlarını İndir", out3_res.getvalue(), "karlilik_analiz_sonuc.xlsx")
+
         with t3_2:
             if st.session_state.k3_not_found:
-                sel = st.selectbox("Ürün Seç (E1):", st.session_state.k3_not_found, format_func=lambda x: f"{x[k3_n1]}")
-                suggs = sorted(st.session_state.k3_comp_list, key=lambda x: similarity(clean_name(sel[k3_n1]), clean_name(str(x[k3_c2]))), reverse=True)[:3]
+                sel = st.selectbox("Ürün Seç (E1):", st.session_state.k3_not_found, format_func=lambda x: f"{x[k3_n1]}", key="k3_sel_box")
+                search = clean_name(sel[k3_n1])
+                suggs = sorted(st.session_state.k3_comp_list, key=lambda x: similarity(search, clean_name(str(x[k3_c2]))), reverse=True)[:3]
                 for s in suggs:
                     if st.button(f"Eşleştir: {s[k3_c2]}", key=f"k3_m_{s[k3_c2]}_{sel[k3_c1]}"):
                         p1, p2 = float(sel[k3_p1]), float(s[k3_p2])
@@ -193,7 +198,16 @@ if f3_ref and f3_comp:
                             "Barem %12": round(nn/0.88,4), "40+12 Liste": round(nn/0.528,4), "Tip": "Manuel"
                         })
                         st.session_state.k3_not_found.remove(sel); st.rerun()
+        
         with t3_3:
             if st.session_state.k3_unused_e2:
-                st.warning("Bu ürünler 2. Excel'de var ancak 1. Excel'deki hiçbir ürünle (kodla) eşleşmedi.")
-                st.dataframe(pd.DataFrame(st.session_state.k3_unused_e2), use_container_width=True)
+                df_unused = pd.DataFrame(st.session_state.k3_unused_e2)
+                st.warning("Bu ürünler 2. Excel'de var ancak 1. Excel'deki hiçbir kodla eşleşmedi.")
+                st.dataframe(df_unused, use_container_width=True)
+                
+                # YENİ EKLENEN İNDİRME BUTONU
+                out_unused = io.BytesIO()
+                df_unused.to_excel(out_unused, index=False)
+                st.download_button("📥 Karşı Dosyada Eşleşmeyenleri İndir", out_unused.getvalue(), "karsi_dosya_eslesmeyenler.xlsx")
+            else:
+                st.success("Karşı dosyadaki tüm ürünler listenizle eşleşti.")
