@@ -1,158 +1,107 @@
 import streamlit as st
-import pdfplumber
 import pandas as pd
 import io
 import re
-import math
 
-st.set_page_config(page_title="Nokta Atışı: Kesin Çözüm", layout="wide")
+# Sayfa Yapılandırması
+st.set_page_config(page_title="Excel Fiyat Karşılaştırıcı", layout="wide")
 
-# 1. TEMİZLEME VE HESAPLAMA
-def clean_string(s):
-    if not s or s == 'nan': return ""
-    return re.sub(r'[^a-zA-Z0-9]', '', str(s)).upper()
-
-def calculate_discount(price_str, disc_str):
+def calculate_chain_discount(price, disc_str):
+    """Zincir iskontoyu matematiksel olarak uygular."""
     try:
-        num_str = re.sub(r'[^\d,]', '', price_str).replace(',', '.')
-        val = float(num_str)
-        if not disc_str or disc_str == "0": return round(val, 2)
+        val = float(price)
+        if not disc_str or disc_str == "0":
+            return round(val, 2)
+        
         discounts = [float(d.strip()) for d in str(disc_str).split('+') if d.strip()]
         for d in discounts:
             val = val * (1 - d / 100)
         return round(val, 2)
-    except: return 0
+    except:
+        return 0
 
-# 2. ARAYÜZ
-st.title("🎯 Nokta Atışı: Kesin Çözüm Botu")
-st.write("Kodlar parçalanmış olsa bile PDF'in derinliklerinden bulur ve fiyatıyla eşleştirir.")
+st.title("📊 Excel Ürün Adı Eşleştirme & Fiyatlandırma")
+st.write("İki Excel dosyasını 'Ürün Adı' üzerinden karşılaştırır ve J sütunundaki fiyatı çekerek iskonto uygular.")
 
-col1, col2, col3 = st.columns([1, 1, 1])
+# Dosya Yükleme Alanları
+col1, col2 = st.columns(2)
+
 with col1:
-    reference_excel = st.file_uploader("📂 Referans Excel", type="xlsx")
+    st.subheader("1. Kendi Ürün Listeniz")
+    ref_file = st.file_uploader("Ürün isimlerinin olduğu Excel'i yükleyin", type="xlsx", key="ref")
+
 with col2:
-    pdf_file = st.file_uploader("📄 PDF Katalog", type="pdf")
-with col3:
-    discount_input = st.text_input("📉 İskonto (Örn: 50+15)", value="20")
+    st.subheader("2. Güncel Fiyat Listesi (Tedarikçi)")
+    price_file = st.file_uploader("Fiyatların olduğu Excel'i (SVR) yükleyin", type="xlsx", key="price")
 
-# 3. ANA İŞLEM
-if reference_excel and pdf_file:
-    if st.button("🚀 DERİN TARAMAYI BAŞLAT"):
-        # Excel Hazırlığı
-        ref_df = pd.read_excel(reference_excel)
-        excel_items = []
-        for _, row in ref_df.iterrows():
-            name, code = str(row.iloc[0]).strip(), str(row.iloc[1]).strip()
-            if code and code != 'nan' and len(code) > 2:
-                excel_items.append({"name": name, "orig": code, "clean": clean_string(code)})
+discount_input = st.text_input("📉 Uygulanacak İskonto Oranı (Örn: 50+15)", value="50+15")
 
-        if not excel_items:
-            st.error("Excel'de taranacak kod bulunamadı!")
-            st.stop()
+if st.button("🚀 EŞLEŞTİRMEYİ VE HESAPLAMAYI BAŞLAT"):
+    if ref_file and price_file:
+        try:
+            # 1. Dosyaları oku
+            # Fiyat listesini (SVR) okurken Malzeme Adı (C) ve Birim Fiyatı (J) sütunlarına odaklanıyoruz
+            df_ref = pd.read_excel(ref_file)
+            df_price = pd.read_excel(price_file)
 
-        st.info(f"Analiz ediliyor: {len(excel_items)} ürün aranıyor...")
-        
-        results = []
-        found_codes = set()
-        price_regex = re.compile(r'\d{1,3}(?:\.\d{3})*,\d{2}')
-
-        with pdfplumber.open(pdf_file) as pdf:
-            progress_bar = st.progress(0)
+            # Görseldeki yapıya göre (C sütunu isim, J sütunu fiyat)
+            # Not: Python'da sütunlar 0'dan başlar (A=0, B=1, C=2... J=9)
+            # Eğer Excel'de başlık satırı farklıysa sütun isimlerini manuel belirleyelim:
             
-            for p_idx, page in enumerate(pdf.pages):
-                # Sayfadaki tüm kelimeleri ve fiyatları çıkar
-                words = page.extract_words()
-                text = page.extract_text()
-                
-                if not text: continue
-                
-                # Sayfadaki tüm fiyatları ve konumlarını bul
-                page_prices = []
-                for match in price_regex.finditer(text):
-                    p_str = match.group()
-                    kuruş = p_str.split(',')[-1]
-                    # Fiyatın koordinatını en yakın kelimeden bul
-                    for w in words:
-                        if kuruş in w['text']:
-                            page_prices.append({"text": p_str, "top": w['top'], "x0": w['x0']})
-                            break
+            # Fiyat Listesi Sözlüğü Oluştur (İsim -> Fiyat)
+            # Harf duyarlılığını ve boşlukları temizleyerek eşleştirme gücünü artırıyoruz
+            price_map = {}
+            for _, row in df_price.iterrows():
+                try:
+                    m_adi = str(row.iloc[2]).strip().lower() # C Sütunu (Malzeme Adı)
+                    b_fiyat = row.iloc[9]                   # J Sütunu (Birim Fiyatı)
+                    price_map[m_adi] = b_fiyat
+                except:
+                    continue
 
-                # Excel kodlarını sayfa metni içinde ara
-                for target in excel_items:
-                    if target['clean'] in found_codes: continue
-                    
-                    # Kodu metin içinde bul (Normal veya boşluksuz haliyle)
-                    # re.escape kullanarak özel karakterleri (nokta, tire) güvenli hale getiriyoruz
-                    pattern = re.compile(re.escape(target['orig']), re.IGNORECASE)
-                    match_in_text = pattern.search(text)
-                    
-                    if not match_in_text and len(target['clean']) > 4:
-                        # Eğer tam kod yoksa, boşluksuz halini ara
-                        clean_page_text = clean_string(text)
-                        if target['clean'] in clean_page_text:
-                            # Koordinatı yaklaşık olarak kelime listesinden çek
-                            for w in words:
-                                if clean_string(w['text']) in target['clean']:
-                                    code_top = w['top']
-                                    code_x = w['x0']
-                                    break
-                            else: continue
-                        else: continue
-                    elif match_in_text:
-                        # Koordinatı bul
-                        first_word_of_code = target['orig'].split()[0]
-                        for w in words:
-                            if first_word_of_code in w['text']:
-                                code_top = w['top']
-                                code_x = w['x0']
-                                break
-                        else: continue
-                    else: continue
+            # 2. Karşılaştırma ve Yeni Liste Oluşturma
+            results = []
+            for _, row in df_ref.iterrows():
+                ref_name = str(row.iloc[0]).strip() # Kendi listenizdeki ilk sütun isim varsayılıyor
+                ref_name_lower = ref_name.lower()
 
-                    # Kod bulundu, şimdi en yakın fiyatı (sağda veya altta) bul
-                    best_price = None
-                    min_score = 999999
+                if ref_name_lower in price_map:
+                    liste_fiyati = price_map[ref_name_lower]
+                    net_fiyat = calculate_chain_discount(liste_fiyati, discount_input)
                     
-                    for p in page_prices:
-                        dy = p['top'] - code_top
-                        dx = p['x0'] - code_x
-                        
-                        # MIKNATIS MANTIĞI: Sağda (satır sonu) veya Altta (resim altı)
-                        if abs(dy) < 12 and dx > 0: # Aynı satır
-                            score = dx * 0.5
-                        elif dy > 0 and abs(dx) < 200: # Alt satırlar
-                            score = dy
-                        else:
-                            score = 999999
-                        
-                        if score < min_score:
-                            min_score = score
-                            best_price = p['text']
-                    
-                    if best_price and min_score < 1000:
-                        net_val = calculate_discount(best_price, discount_input)
-                        results.append({
-                            "Ürün İsmi": target['name'],
-                            "Ürün Kodu": target['orig'],
-                            "Liste Fiyatı": best_price,
-                            "Net Fiyat": net_val,
-                            "Sayfa": p_idx + 1
-                        })
-                        found_codes.add(target['clean'])
+                    results.append({
+                        "Ürün Adı": ref_name,
+                        "Eski Liste Fiyatı (J Sütunu)": liste_fiyati,
+                        "İskonto": discount_input,
+                        "Yeni İskontolu Fiyat": net_fiyat,
+                        "Durum": "Eşleşti"
+                    })
+                else:
+                    results.append({
+                        "Ürün Adı": ref_name,
+                        "Eski Liste Fiyatı (J Sütunu)": "-",
+                        "İskonto": "-",
+                        "Yeni İskontolu Fiyat": "-",
+                        "Durum": "Bulunamadı"
+                    })
 
-                progress_bar.progress((p_idx + 1) / len(pdf.pages))
-
-        # 4. SONUÇLAR
-        if results:
-            res_df = pd.DataFrame(results).drop_duplicates(subset=['Ürün Kodu'])
-            st.success(f"✅ Başarı! {len(res_df)} / {len(excel_items)} ürün eşleşti.")
+            # 3. Sonuçları Göster ve İndir
+            res_df = pd.DataFrame(results)
+            st.success(f"İşlem Tamamlandı! {len(res_df[res_df['Durum'] == 'Eşleşti'])} ürün başarıyla eşleşti.")
             st.dataframe(res_df, use_container_width=True)
-            
+
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 res_df.to_excel(writer, index=False)
             
-            st.download_button("📥 Excel Olarak İndir", output.getvalue(), "fiyat_listesi.xlsx")
-        else:
-            st.error("Hala eşleşme bulunamadı. Lütfen PDF'in 'taranmış bir resim' (OCR gerektiren) olup olmadığını kontrol edin.")
-            st.info("Eğer PDF'de yazıları farenizle seçemiyorsanız, bu bir resimdir ve bu yazılımın okuyabilmesi için OCR destekli bir sürüm gerekir.")
+            st.download_button(
+                label="📥 Hazırlanan Excel'i İndir",
+                data=output.getvalue(),
+                file_name="guncellenmis_fiyat_listesi.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        except Exception as e:
+            st.error(f"Bir hata oluştu: {e}")
+    else:
+        st.warning("Lütfen her iki Excel dosyasını da yükleyin.")
