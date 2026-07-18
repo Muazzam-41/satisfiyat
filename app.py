@@ -4,98 +4,103 @@ import pandas as pd
 import io
 import re
 
-st.set_page_config(page_title="Gelişmiş Fiyat Botu", layout="wide")
+st.set_page_config(page_title="Katalog Fiyat Botu", layout="wide")
 
-st.title("📊 Profesyonel PDF Fiyat İşleyici")
-st.write("PDF'den Ürün Kodu, Adı ve Fiyatı ayırır; çoklu iskonto (Örn: 50+15) uygular.")
+st.title("📂 Katalogdan Fiyat ve Kod Çekici")
+st.write("Büyük harfli başlıkları 'Ürün İsmi' olarak alır ve altındaki kod/fiyatlarla eşleştirir.")
 
 # Kullanıcı Girişleri
 col1, col2 = st.columns([2, 1])
 with col1:
-    uploaded_file = st.file_uploader("PDF Dosyasını Yükleyin", type="pdf")
+    uploaded_file = st.file_uploader("PDF Katalog Dosyasını Yükleyin", type="pdf")
 with col2:
-    discount_input = st.text_input("İskonto Oranları (Arada + kullanarak)", value="50+15")
-    st.caption("Örnek: 50+15 yazarsanız önce %50, sonra kalan tutar üzerinden %15 düşer.")
+    discount_input = st.text_input("İskonto (Örn: 50+15)", value="50+10")
+    # Font büyüklüğü eşiği (Hangi yazıların başlık sayılacağını belirler)
+    font_threshold = st.slider("Başlık Font Büyüklüğü Eşiği", 10, 20, 12)
 
-def calculate_chain_discount(original_price, discount_str):
-    """50+15+5 gibi verileri sırasıyla fiyata uygular."""
+def calculate_chain_discount(price, discount_str):
     try:
         discounts = [float(d.strip()) for d in discount_str.split('+')]
-        current_price = original_price
         for d in discounts:
-            current_price = current_price * (1 - d / 100)
-        return round(current_price, 2)
+            price = price * (1 - d / 100)
+        return round(price, 2)
     except:
-        return original_price
+        return price
 
-def clean_price(text):
-    """Metin içindeki fiyatı temizleyip sayıya çevirir."""
-    if not text: return None
-    # Nokta ve virgül karmaşasını çözer (Örn: 1.250,50 -> 1250.50)
+def is_price(text):
+    """Metnin bir fiyat olup olmadığını kontrol eder."""
     clean = re.sub(r'[^\d,.]', '', str(text))
-    if ',' in clean and '.' in clean:
-        clean = clean.replace('.', '').replace(',', '.')
-    elif ',' in clean:
-        clean = clean.replace(',', '.')
-    try:
-        return float(clean)
-    except:
-        return None
+    return bool(re.search(r'\d', clean))
 
-def process_pdf(pdf_file, discount_str):
-    extracted_data = []
+def process_catalog(pdf_file, discount_str, threshold):
+    data = []
+    current_product_name = "Tanımsız Ürün"
     
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
-            table = page.extract_table()
-            if table:
-                for row in table:
-                    # Boş satırları ele
-                    row = [cell for cell in row if cell is not None]
-                    if len(row) < 2: continue # En az bir isim bir fiyat olmalı
-                    
-                    # Varsayımsal sütun ayırıcı:
-                    # Genelde ilk sütun KOD, son sütun FİYAT, ortadakiler İSİM'dir.
-                    product_code = str(row[0]).strip()
-                    raw_price = str(row[-1]).strip()
-                    
-                    # Ürün adı: İlk ve son sütun haricinde kalan her şey
-                    product_name = " ".join([str(item) for item in row[1:-1]]).strip()
-                    if not product_name: product_name = "Belirtilmemiş"
+            # Sayfadaki tüm kelimeleri ve özelliklerini (font büyüklüğü dahil) al
+            words = page.extract_words(extra_attrs=["size", "fontname"])
+            
+            # Kelimeleri satır satır grupla (y koordinatına göre)
+            lines = {}
+            for word in words:
+                y = round(word['top'])
+                if y not in lines: lines[y] = []
+                lines[y].append(word)
+            
+            # Satırları yukarıdan aşağıya işle
+            for y in sorted(lines.keys()):
+                line_words = lines[y]
+                line_text = " ".join([w['text'] for w in line_words])
+                avg_font_size = sum([w['size'] for w in line_words]) / len(line_words)
+                
+                # MANTIK 1: Eğer font büyükse ve harfler büyükse bu ÜRÜN İSMİDİR
+                if avg_font_size >= threshold and line_text.isupper():
+                    current_product_name = line_text
+                    continue
 
-                    price_val = clean_price(raw_price)
+                # MANTIK 2: Satırda hem kod hem fiyat araması yap
+                # (Genelde kodlar harf+rakam, fiyatlar ise rakam+virgül içerir)
+                # Bu kısım basit bir tablo ayırıcı gibi çalışır
+                if len(line_words) >= 2:
+                    potential_price = line_words[-1]['text']
+                    potential_code = line_words[0]['text']
                     
-                    if price_val:
-                        final_price = calculate_chain_discount(price_val, discount_str)
-                        extracted_data.append({
-                            "Ürün Kodu": product_code,
-                            "Ürün Adı": product_name,
-                            "Liste Fiyatı": price_val,
-                            "İskonto Yapısı": discount_str,
-                            "Net Fiyat": final_price
-                        })
-    return extracted_data
+                    # Fiyat temizleme ve kontrol
+                    clean_p = re.sub(r'[^\d,.]', '', potential_price).replace(',', '.')
+                    try:
+                        price_val = float(clean_p)
+                        if price_val > 0:
+                            net_price = calculate_chain_discount(price_val, discount_str)
+                            data.append({
+                                "Ürün Grubu (Başlık)": current_product_name,
+                                "Ürün Kodu": potential_code,
+                                "Liste Fiyatı": price_val,
+                                "Net Fiyat": net_price
+                            })
+                    except:
+                        continue
+    return data
 
 if uploaded_file:
-    data = process_pdf(uploaded_file, discount_input)
-    
-    if data:
-        df = pd.DataFrame(data)
-        st.success(f"{len(df)} Ürün Başarıyla İşlendi!")
+    with st.spinner('Katalog analiz ediliyor...'):
+        extracted_data = process_catalog(uploaded_file, discount_input, font_threshold)
         
-        # Önizleme tablosu
-        st.dataframe(df, use_container_width=True)
-        
-        # Excel hazırlama
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Fiyat_Listesi')
-        
-        st.download_button(
-            label="✅ Excel Dosyasını İndir",
-            data=output.getvalue(),
-            file_name="iskontolu_liste.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    else:
-        st.error("Uygun tablo yapısı bulunamadı. PDF'in 'Metin' formatında ve tablolu olduğundan emin olun.")
+        if extracted_data:
+            df = pd.DataFrame(extracted_data)
+            st.success(f"{len(df)} kalem ürün/fiyat bulundu.")
+            st.dataframe(df, use_container_width=True)
+            
+            # Excel İndirme
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False)
+            
+            st.download_button(
+                label="📥 İskontolu Listeyi İndir",
+                data=output.getvalue(),
+                file_name="katalog_fiyat_listesi.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else:
+            st.warning("Belirlediğiniz font eşiğine göre ürün ismi veya fiyat bulunamadı. Eşiği düşürmeyi deneyin.")
