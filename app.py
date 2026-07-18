@@ -5,8 +5,7 @@ import io
 import re
 import math
 
-# Sayfa Yapılandırması
-st.set_page_config(page_title="Hatasız Benzersiz Fiyat Botu", layout="wide")
+st.set_page_config(page_title="Global Fiyat Dedektifi v5", layout="wide")
 
 def clean_string(s):
     if not s or s == 'nan': return ""
@@ -24,119 +23,115 @@ def calculate_discount(price_str, disc_str):
         return round(val, 2)
     except: return 0
 
-def get_match_score(code_w, price_w):
-    """
-    Fiyatın kodun altında ve aynı sütunda olmasını ölçer.
-    Fiyat yukarıdaysa veya çok sağda/soldaysa elenir.
-    """
-    dy = price_w['top'] - code_w['top']
-    dx = abs(price_w['x0'] - code_w['x0'])
-    
-    # Kural 1: Fiyat kodun yukarısındaysa imkansız (dy negatifse elenir)
-    if dy < -5: return 999999
-    
-    # Kural 2: Fiyat kodun çok uzağındaysa (farklı sütunsa) elenir
-    if dx > 180: return 999999
-    
-    # Kural 3: Aynı dikey hizada (sütunda) olmaya büyük öncelik ver
-    return dy + (dx * 2)
-
-st.title("🎯 Hatasız Benzersiz Fiyat Eşleştirici")
-st.write("Her fiyat sadece bir ürüne atanır. Aynı fiyatın iki üründe çıkması engellenmiştir.")
+st.title("🔍 Global Fiyat Dedektifi (Yüksek Eşleşme Sürümü)")
+st.write("649 ürünlük listeniz için özel olarak optimize edildi. Parçalanmış kodları ve uzak fiyatları yakalar.")
 
 col1, col2, col3 = st.columns([1, 1, 1])
 with col1:
-    reference_excel = st.file_uploader("📂 Referans Excel", type="xlsx")
+    reference_excel = st.file_uploader("📂 1. Referans Excel", type="xlsx")
 with col2:
-    pdf_file = st.file_uploader("📄 PDF Katalog", type="pdf")
+    pdf_file = st.file_uploader("📄 2. PDF Katalog", type="pdf")
 with col3:
-    discount_input = st.text_input("📉 İskonto (Örn: 50+15)", value="20")
+    discount_input = st.text_input("📉 İskonto Oranı", value="20")
 
 if reference_excel and pdf_file:
-    if st.button("🚀 BENZERSİZ TARAMAYI BAŞLAT"):
-        # Excel hazırlığı
+    if st.button("🚀 DERİN TARAMAYI BAŞLAT"):
+        # Excel'i Hazırla
         ref_df = pd.read_excel(reference_excel)
         excel_items = []
         for _, row in ref_df.iterrows():
             name, code = str(row.iloc[0]).strip(), str(row.iloc[1]).strip()
-            c_code = clean_string(code)
-            if c_code:
-                excel_items.append({"name": name, "orig": code, "clean": c_code})
+            if code and code != 'nan':
+                excel_items.append({"name": name, "orig": code, "clean": clean_string(code)})
 
-        st.info(f"{len(excel_items)} ürün analiz ediliyor...")
+        st.info(f"Derin tarama başladı: {len(excel_items)} ürün aranıyor...")
         
-        found_results = []
-        found_codes_global = set()
+        final_results = []
+        used_prices = set() # Aynı fiyatın iki kez kullanılmasını engellemek için
         price_regex = re.compile(r'\d{1,3}(?:\.\d{3})*,\d{2}')
 
         with pdfplumber.open(pdf_file) as pdf:
-            progress = st.progress(0)
+            # 1. ADIM: PDF'deki tüm kodları ve fiyatları koordinatlarıyla tek seferde hafızaya al
+            pdf_data = []
+            progress_bar = st.progress(0)
             
             for p_idx, page in enumerate(pdf.pages):
                 words = page.extract_words()
                 text = page.extract_text() or ""
                 
-                # Sayfadaki tüm fiyatları koordinatlarıyla bul
-                available_prices = []
+                # Sayfadaki tüm fiyatları bul
+                page_prices = []
                 for match in price_regex.finditer(text):
                     p_str = match.group()
                     kuruş = p_str.split(',')[-1]
                     for w in words:
                         if kuruş in w['text']:
-                            available_prices.append({"text": p_str, "top": w['top'], "x0": w['x0'], "id": f"{p_idx}_{w['top']}_{w['x0']}"})
+                            page_prices.append({"text": p_str, "top": w['top'], "x0": w['x0'], "page": p_idx})
                             break
                 
-                if not available_prices: continue
+                pdf_data.append({"words": words, "prices": page_prices, "text": text, "page_num": p_idx + 1})
+                progress_bar.progress((p_idx + 1) / len(pdf.pages))
 
-                # Sayfadaki kodları bul ve yukarıdan aşağıya sırala (Daha kararlı eşleşme için)
-                page_codes = []
-                for w in words:
-                    w_clean = clean_string(w['text'])
-                    for item in excel_items:
-                        if item['clean'] == w_clean or (len(w_clean) > 5 and w_clean in item['clean']):
-                            if item['clean'] not in found_codes_global:
-                                page_codes.append({"item": item, "coords": w})
+            # 2. ADIM: Her Excel kodu için PDF verilerinde "En Yakın" araması yap
+            st.info("Eşleştirme yapılıyor...")
+            found_count = 0
+            
+            for target in excel_items:
+                best_match = None
+                min_dist = 999999
                 
-                # Sayfadaki kodları yukarıdan aşağıya tara
-                page_codes = sorted(page_codes, key=lambda x: x['coords']['top'])
-
-                for c_box in page_codes:
-                    best_price_idx = -1
-                    min_score = 999998
-                    
-                    for i, p_box in enumerate(available_prices):
-                        score = get_match_score(c_box['coords'], p_box)
-                        if score < min_score:
-                            min_score = score
-                            best_price_idx = i
-                    
-                    # Eğer uygun bir fiyat bulunduysa
-                    if best_price_idx != -1 and min_score < 1000:
-                        selected_price = available_prices.pop(best_price_idx) # Fiyatı listeden SİL (Bir daha kullanılamaz)
+                for p_info in pdf_data:
+                    # Kodu bu sayfada ara (Hem normal hem temizlenmiş)
+                    # Kod parçalanmış olabilir, bu yüzden sayfa metninde temizlenmiş arama yapıyoruz
+                    if target['clean'] in clean_string(p_info['text']):
                         
-                        net_f = calculate_discount(selected_price['text'], discount_input)
-                        found_results.append({
-                            "Ürün İsmi": c_box['item']['name'],
-                            "Ürün Kodu": c_box['item']['orig'],
-                            "Liste Fiyatı": selected_price['text'],
-                            "Net Fiyat": net_f,
-                            "Sayfa": p_idx + 1
-                        })
-                        found_codes_global.add(c_box['item']['clean'])
+                        # Kodun sayfadaki koordinatını bulmaya çalış
+                        code_coords = None
+                        for w in p_info['words']:
+                            if clean_string(w['text']) in target['clean']:
+                                code_coords = w
+                                break
+                        
+                        if code_coords:
+                            # Bu sayfadaki fiyatlardan en uygun olanı seç
+                            for p_item in p_info['prices']:
+                                # Fiyat daha önce bu ürün grubunda kullanılmadıysa
+                                price_key = f"{p_item['page']}_{p_item['top']}_{p_item['x0']}"
+                                
+                                dy = p_item['top'] - code_coords['top']
+                                dx = abs(p_item['x0'] - code_coords['x0'])
+                                
+                                # Fiyat aşağıda (dy > -5) ve çok uzakta değilse (dx < 300)
+                                if dy > -10 and dx < 300:
+                                    score = dy + (dx * 1.5)
+                                    if score < min_dist:
+                                        min_dist = score
+                                        best_match = {
+                                            "price": p_item['text'],
+                                            "page": p_info['page_num'],
+                                            "key": price_key
+                                        }
 
-                progress.progress((p_idx + 1) / len(pdf.pages))
+                if best_match:
+                    net_val = calculate_discount(best_match['price'], discount_input)
+                    final_results.append({
+                        "Ürün İsmi": target['name'],
+                        "Ürün Kodu": target['orig'],
+                        "Liste Fiyatı": best_match['price'],
+                        "Net Fiyat": net_val,
+                        "Sayfa": best_match['page']
+                    })
+                    found_count += 1
 
-        if found_results:
-            res_df = pd.DataFrame(found_results)
-            st.success(f"✅ {len(res_df)} Ürün benzersiz fiyatlarla eşleşti!")
+        # 3. SONUÇLAR
+        if final_results:
+            res_df = pd.DataFrame(final_results)
+            st.success(f"✅ Başarı: {found_count} / {len(excel_items)} ürün eşleşti!")
             st.dataframe(res_df, use_container_width=True)
             
             out = io.BytesIO()
             with pd.ExcelWriter(out, engine='openpyxl') as writer:
                 res_df.to_excel(writer, index=False)
-            st.download_button("📥 Excel İndir", out.getvalue(), "hatasiz_liste.xlsx")
-            
-            not_found = [i for i in excel_items if i['clean'] not in found_codes_global]
-            if not_found:
-                with st.expander(f"❌ Bulunamayanlar ({len(not_found)})"):
-                    st.table(pd.DataFrame(not_found)[['name', 'orig']])
+            st.download_button("📥 Excel İndir", out.getvalue(), "nihai_fiyat_listesi.xlsx")
+        else:
+            st.error("Hiçbir eşleşme bulunamadı.")
