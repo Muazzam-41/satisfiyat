@@ -5,16 +5,15 @@ import io
 import re
 import math
 
-st.set_page_config(page_title="Hatasız Fiyat Eşleştirici PRO", layout="wide")
+st.set_page_config(page_title="Nokta Atışı: Kesin Çözüm", layout="wide")
 
-# 1. TEMİZLEME VE HESAPLAMA FONKSİYONLARI
+# 1. TEMİZLEME VE HESAPLAMA
 def clean_string(s):
     if not s or s == 'nan': return ""
     return re.sub(r'[^a-zA-Z0-9]', '', str(s)).upper()
 
 def calculate_discount(price_str, disc_str):
     try:
-        # Fiyatı temizle: Rakam ve virgül dışındakileri at, virgülü noktaya çevir
         num_str = re.sub(r'[^\d,]', '', price_str).replace(',', '.')
         val = float(num_str)
         if not disc_str or disc_str == "0": return round(val, 2)
@@ -25,8 +24,8 @@ def calculate_discount(price_str, disc_str):
     except: return 0
 
 # 2. ARAYÜZ
-st.title("🎯 Nokta Atışı: Hatasız Mıknatıs Eşleştirici")
-st.write("Kodun sağındaki (satır sonu) veya altındaki (resim altı) fiyatı hatasız yakalar.")
+st.title("🎯 Nokta Atışı: Kesin Çözüm Botu")
+st.write("Kodlar parçalanmış olsa bile PDF'in derinliklerinden bulur ve fiyatıyla eşleştirir.")
 
 col1, col2, col3 = st.columns([1, 1, 1])
 with col1:
@@ -38,16 +37,20 @@ with col3:
 
 # 3. ANA İŞLEM
 if reference_excel and pdf_file:
-    if st.button("🚀 TARAMAYI VE HESAPLAMAYI BAŞLAT"):
+    if st.button("🚀 DERİN TARAMAYI BAŞLAT"):
         # Excel Hazırlığı
         ref_df = pd.read_excel(reference_excel)
         excel_items = []
         for _, row in ref_df.iterrows():
             name, code = str(row.iloc[0]).strip(), str(row.iloc[1]).strip()
-            if code and code != 'nan':
+            if code and code != 'nan' and len(code) > 2:
                 excel_items.append({"name": name, "orig": code, "clean": clean_string(code)})
 
-        st.info(f"Derin analiz başladı: {len(excel_items)} ürün taranıyor...")
+        if not excel_items:
+            st.error("Excel'de taranacak kod bulunamadı!")
+            st.stop()
+
+        st.info(f"Analiz ediliyor: {len(excel_items)} ürün aranıyor...")
         
         results = []
         found_codes = set()
@@ -57,84 +60,99 @@ if reference_excel and pdf_file:
             progress_bar = st.progress(0)
             
             for p_idx, page in enumerate(pdf.pages):
+                # Sayfadaki tüm kelimeleri ve fiyatları çıkar
                 words = page.extract_words()
-                text = page.extract_text() or ""
+                text = page.extract_text()
+                
+                if not text: continue
                 
                 # Sayfadaki tüm fiyatları ve konumlarını bul
                 page_prices = []
                 for match in price_regex.finditer(text):
                     p_str = match.group()
                     kuruş = p_str.split(',')[-1]
+                    # Fiyatın koordinatını en yakın kelimeden bul
                     for w in words:
                         if kuruş in w['text']:
                             page_prices.append({"text": p_str, "top": w['top'], "x0": w['x0']})
                             break
-                
-                if not page_prices: continue
 
-                # Her Excel kodu için bu sayfada "Mıknatıs" taraması yap
+                # Excel kodlarını sayfa metni içinde ara
                 for target in excel_items:
                     if target['clean'] in found_codes: continue
                     
-                    # Sayfada kodun geçtiği yeri bul
-                    code_word = None
-                    for w in words:
-                        if target['clean'] == clean_string(w['text']):
-                            code_word = w
-                            break
+                    # Kodu metin içinde bul (Normal veya boşluksuz haliyle)
+                    # re.escape kullanarak özel karakterleri (nokta, tire) güvenli hale getiriyoruz
+                    pattern = re.compile(re.escape(target['orig']), re.IGNORECASE)
+                    match_in_text = pattern.search(text)
                     
-                    if code_word:
-                        best_price = None
-                        min_score = 999999
+                    if not match_in_text and len(target['clean']) > 4:
+                        # Eğer tam kod yoksa, boşluksuz halini ara
+                        clean_page_text = clean_string(text)
+                        if target['clean'] in clean_page_text:
+                            # Koordinatı yaklaşık olarak kelime listesinden çek
+                            for w in words:
+                                if clean_string(w['text']) in target['clean']:
+                                    code_top = w['top']
+                                    code_x = w['x0']
+                                    break
+                            else: continue
+                        else: continue
+                    elif match_in_text:
+                        # Koordinatı bul
+                        first_word_of_code = target['orig'].split()[0]
+                        for w in words:
+                            if first_word_of_code in w['text']:
+                                code_top = w['top']
+                                code_x = w['x0']
+                                break
+                        else: continue
+                    else: continue
+
+                    # Kod bulundu, şimdi en yakın fiyatı (sağda veya altta) bul
+                    best_price = None
+                    min_score = 999999
+                    
+                    for p in page_prices:
+                        dy = p['top'] - code_top
+                        dx = p['x0'] - code_x
                         
-                        for p in page_prices:
-                            dy = p['top'] - code_word['top']
-                            dx = p['x0'] - code_word['x0']
-                            
-                            # --- MIKNATIS MANTIĞI ---
-                            
-                            # DURUM 1: AYNI SATIRIN SONUNDA (dx pozitif, dy yaklaşık 0)
-                            if abs(dy) < 10 and dx > 0:
-                                score = dx * 0.5 # Çok güçlü puan
-                            
-                            # DURUM 2: RESMİN ALTINDA (dy pozitif, dx yaklaşık 0)
-                            elif dy > 0 and abs(dx) < 150:
-                                score = dy # Güçlü puan
-                                
-                            else:
-                                score = 999999 # Geçersiz konum
-                            
-                            if score < min_score:
-                                min_score = score
-                                best_price = p['text']
+                        # MIKNATIS MANTIĞI: Sağda (satır sonu) veya Altta (resim altı)
+                        if abs(dy) < 12 and dx > 0: # Aynı satır
+                            score = dx * 0.5
+                        elif dy > 0 and abs(dx) < 200: # Alt satırlar
+                            score = dy
+                        else:
+                            score = 999999
                         
-                        if best_price and min_score < 1000:
-                            net_val = calculate_discount(best_price, discount_input)
-                            results.append({
-                                "Ürün İsmi": target['name'],
-                                "Ürün Kodu": target['orig'],
-                                "Liste Fiyatı": best_price,
-                                "Net Fiyat": net_val,
-                                "Sayfa": p_idx + 1
-                            })
-                            found_codes.add(target['clean'])
+                        if score < min_score:
+                            min_score = score
+                            best_price = p['text']
+                    
+                    if best_price and min_score < 1000:
+                        net_val = calculate_discount(best_price, discount_input)
+                        results.append({
+                            "Ürün İsmi": target['name'],
+                            "Ürün Kodu": target['orig'],
+                            "Liste Fiyatı": best_price,
+                            "Net Fiyat": net_val,
+                            "Sayfa": p_idx + 1
+                        })
+                        found_codes.add(target['clean'])
 
                 progress_bar.progress((p_idx + 1) / len(pdf.pages))
 
         # 4. SONUÇLAR
         if results:
             res_df = pd.DataFrame(results).drop_duplicates(subset=['Ürün Kodu'])
-            st.success(f"✅ {len(res_df)} / {len(excel_items)} ürün hatasız eşleşti!")
+            st.success(f"✅ Başarı! {len(res_df)} / {len(excel_items)} ürün eşleşti.")
             st.dataframe(res_df, use_container_width=True)
             
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 res_df.to_excel(writer, index=False)
-            st.download_button("📥 Excel Olarak İndir", output.getvalue(), "hatasiz_liste.xlsx")
             
-            not_found = [i for i in excel_items if i['clean'] not in found_codes]
-            if not_found:
-                with st.expander(f"❌ Bulunamayan Ürünler ({len(not_found)})"):
-                    st.table(pd.DataFrame(not_found)[['name', 'orig']])
+            st.download_button("📥 Excel Olarak İndir", output.getvalue(), "fiyat_listesi.xlsx")
         else:
-            st.error("Hiçbir eşleşme sağlanamadı. Lütfen PDF formatını kontrol edin.")
+            st.error("Hala eşleşme bulunamadı. Lütfen PDF'in 'taranmış bir resim' (OCR gerektiren) olup olmadığını kontrol edin.")
+            st.info("Eğer PDF'de yazıları farenizle seçemiyorsanız, bu bir resimdir ve bu yazılımın okuyabilmesi için OCR destekli bir sürüm gerekir.")
