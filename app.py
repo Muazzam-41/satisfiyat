@@ -81,45 +81,68 @@ if f1_ref and f1_svr:
 st.divider()
 
 # ==============================================================================
-# 2. BÖLÜM: STOK KARŞILAŞTIRMA (Burası Güncellendi)
+# 2. BÖLÜM: STOK KARŞILAŞTIRMA (Fiyat Sütunları Eklendi)
 # ==============================================================================
-st.header("2️⃣ Stok Karşılaştırma (Hibrit)")
+st.header("2️⃣ Stok Karşılaştırma (Fiyat Bilgili Hibrit)")
 f2_c1, f2_c2 = st.columns(2)
 with f2_c1: f2_ref = st.file_uploader("Kendi Reel Stok Excel'iniz", type="xlsx", key="f2_r")
 with f2_c2: f2_comp = st.file_uploader("Karşılaştırılacak Excel", type="xlsx", key="f2_s")
 
 if f2_ref and f2_comp:
     df2_r, df2_s = pd.read_excel(f2_ref), pd.read_excel(f2_comp)
+    st.write("⚙️ **Sütun Ayarları**")
     s2_1, s2_2, s2_3, s2_4 = st.columns(4)
     with s2_1: r2_c = st.selectbox("Reel: Kod", df2_r.columns, key="f2_sc1")
     with s2_2: r2_n = st.selectbox("Reel: İsim", df2_r.columns, key="f2_sc2")
     with s2_3: c2_c = st.selectbox("Karşı: Kod", df2_s.columns, key="f2_sc3")
     with s2_4: c2_n = st.selectbox("Karşı: İsim", df2_s.columns, key="f2_sc4")
+    
+    st.write("💰 **Karşı Dosyadaki Fiyat Sütunlarını Seçin**")
+    p2_1, p2_2 = st.columns(2)
+    with p2_1: c2_lp = st.selectbox("Karşı: Liste Fiyatı", df2_s.columns, key="f2_lp")
+    with p2_2: c2_np = st.selectbox("Karşı: Net Fiyat", df2_s.columns, key="f2_np")
 
-    if st.button("🚀 Stokları Karşılaştır", key="f2_btn"):
+    if st.button("🚀 Stokları ve Fiyatları Karşılaştır", key="f2_btn"):
         c_by_code = {clean_code(r[c2_c]): r for _, r in df2_s.iterrows() if pd.notna(r[c2_c])}
         c_by_name = {clean_name(r[c2_n]): r for _, r in df2_s.iterrows() if pd.notna(r[c2_n])}
         a_m, n_f = [], []
+        
         for _, row in df2_r.iterrows():
             cc, cn = clean_code(row[r2_c]), clean_name(row[r2_n])
-            if cc in c_by_code: a_m.append({**row.to_dict(), "Tip": "KOD", **c_by_code[cc].add_prefix("K_")})
-            elif cn in c_by_name: a_m.append({**row.to_dict(), "Tip": "İSİM", **c_by_name[cn].add_prefix("K_")})
-            else: n_f.append(row.to_dict())
+            match_row = None
+            tip = ""
+            
+            if cc in c_by_code:
+                match_row = c_by_code[cc]
+                tip = "KOD"
+            elif cn in c_by_name:
+                match_row = c_by_name[cn]
+                tip = "İSİM"
+                
+            if match_row is not None:
+                a_m.append({
+                    "Reel Kod": row[r2_c],
+                    "Reel İsim": row[r2_n],
+                    "Tip": tip,
+                    "Karşı Liste Fiyatı": match_row[c2_lp],
+                    "Karşı Net Fiyat": match_row[c2_np],
+                    **match_row.add_prefix("K_")
+                })
+            else:
+                n_f.append(row.to_dict())
+        
         st.session_state.s2_auto, st.session_state.s2_not_found = a_m, n_f
         st.session_state.s2_comp_list = df2_s.to_dict('records')
 
     if st.session_state.s2_auto or st.session_state.s2_not_found:
-        t2_1, t2_2, t2_3 = st.tabs(["✅ Eşleşenler", "🔍 Manuel Asistan", "❌ Bulunamayan Stoklar"])
-        
+        t2_1, t2_2, t2_3 = st.tabs(["✅ Eşleşenler", "🔍 Manuel Asistan", "❌ Bulunamayanlar"])
         with t2_1:
             full_s2 = st.session_state.s2_auto + st.session_state.s2_manual
             if full_s2: 
-                df_s2_ok = pd.DataFrame(full_s2)
-                st.dataframe(df_s2_ok, use_container_width=True)
-                out2_ok = io.BytesIO()
-                df_s2_ok.to_excel(out2_ok, index=False)
-                st.download_button("📥 Eşleşenleri İndir", out2_ok.getvalue(), "eslesmis_stok.xlsx")
-        
+                df_res_s2 = pd.DataFrame(full_s2)
+                st.dataframe(df_res_s2, use_container_width=True)
+                out2 = io.BytesIO(); df_res_s2.to_excel(out2, index=False)
+                st.download_button("📥 Stok Listesini İndir", out2.getvalue(), "stok_fiyat_eslesme.xlsx")
         with t2_2:
             if st.session_state.s2_not_found:
                 sel = st.selectbox("Ürün Seç:", st.session_state.s2_not_found, format_func=lambda x: f"{x[r2_n]}", key="s2_sb")
@@ -127,26 +150,23 @@ if f2_ref and f2_comp:
                 suggs = sorted(st.session_state.s2_comp_list, key=lambda x: similarity(search, clean_name(x[c2_n])), reverse=True)[:3]
                 for s in suggs:
                     if st.button(f"Eşleştir: {s[c2_n]}", key=f"s2_m_{s[c2_c]}_{sel[r2_c]}"):
-                        st.session_state.s2_manual.append({**sel, "Tip": "MANUEL", **pd.Series(s).add_prefix("K_")})
+                        st.session_state.s2_manual.append({
+                            "Reel Kod": sel[r2_c], "Reel İsim": sel[r2_n], "Tip": "MANUEL",
+                            "Karşı Liste Fiyatı": s[c2_lp], "Karşı Net Fiyat": s[c2_np],
+                            **pd.Series(s).add_prefix("K_")
+                        })
                         st.session_state.s2_not_found.remove(sel); st.rerun()
-
         with t2_3:
             if st.session_state.s2_not_found:
-                df_s2_fail = pd.DataFrame(st.session_state.s2_not_found)
-                st.error(f"Toplam {len(df_s2_fail)} ürün karşı listede bulunamadı.")
-                st.dataframe(df_s2_fail, use_container_width=True)
-                
-                # İNDİRME BUTONU
-                out2_fail = io.BytesIO()
-                df_s2_fail.to_excel(out2_fail, index=False)
-                st.download_button("📥 Bulunamayan Stokları İndir", out2_fail.getvalue(), "bulunamayan_stoklar.xlsx")
-            else:
-                st.success("Tüm stoklar başarıyla eşleşti.")
+                df_f2 = pd.DataFrame(st.session_state.s2_not_found)
+                st.dataframe(df_f2, use_container_width=True)
+                out2f = io.BytesIO(); df_f2.to_excel(out2f, index=False)
+                st.download_button("📥 Eksik Stokları İndir", out2f.getvalue(), "bulunamayan_stok.xlsx")
 
 st.divider()
 
 # ==============================================================================
-# 3. BÖLÜM: KARLILIK ANALİZİ
+# 3. BÖLÜM: KARLILIK ANALİZİ (Bozulmadı)
 # ==============================================================================
 st.header("3️⃣ Karlılık Analizi")
 f3_c1, f3_c2 = st.columns(2)
@@ -189,16 +209,15 @@ if f3_ref and f3_comp:
         with t3_1:
             res3 = st.session_state.k3_auto + st.session_state.k3_manual
             if res3:
-                df3_res = pd.DataFrame(res3)
-                st.dataframe(df3_res, use_container_width=True)
+                df3_res = pd.DataFrame(res3); st.dataframe(df3_res, use_container_width=True)
                 out3 = io.BytesIO(); df3_res.to_excel(out3, index=False)
-                st.download_button("📥 Analiz İndir", out3.getvalue(), "karlilik_analizi.xlsx")
+                st.download_button("📥 Analiz İndir", out3.getvalue(), "karlilik.xlsx")
         with t3_2:
             if st.session_state.k3_not_found:
                 sel = st.selectbox("Seç:", st.session_state.k3_not_found, format_func=lambda x: f"{x[k3_n1]}", key="k3_sb")
                 sug = sorted(st.session_state.k3_comp_list, key=lambda x: similarity(clean_name(sel[k3_n1]), clean_name(str(x[k3_c2]))), reverse=True)[:3]
                 for s in sug:
-                    if st.button(f"Eşleştir: {s[k3_c2]}", key=f"k3_btn_{s[k3_c2]}"):
+                    if st.button(f"Eşleştir: {s[k3_c2]}", key=f"k3_bt_{s[k3_c2]}"):
                         p1, p2 = float(sel[k3_p1]), float(s[k3_p2])
                         ratio = p2/p1 if p1>0 else 0
                         nn = p1*1.17 if ratio <= 1.16 else p1
@@ -212,5 +231,5 @@ if f3_ref and f3_comp:
             if st.session_state.k3_unused_e2:
                 df3_un = pd.DataFrame(st.session_state.k3_unused_e2)
                 st.dataframe(df3_un, use_container_width=True)
-                out3_un = io.BytesIO(); df3_un.to_excel(out3_un, index=False)
-                st.download_button("📥 Karşı Listeyi İndir", out3_un.getvalue(), "karsi_liste_eksikler.xlsx")
+                out3u = io.BytesIO(); df3_un.to_excel(out3u, index=False)
+                st.download_button("📥 Karşı Listeyi İndir", out3u.getvalue(), "karsi_liste_eksik.xlsx")
