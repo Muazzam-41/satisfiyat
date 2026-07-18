@@ -4,10 +4,33 @@ import pandas as pd
 import io
 import re
 
+# Sayfa Yapılandırması
 st.set_page_config(page_title="Konumsal Fiyat Dedektifi", layout="wide")
 
+# 1. FONKSİYON TANIMLARI (Hata almamak için en üstte olmalı)
+def clean_string(s):
+    """Kodlardaki boşluk ve tireleri temizleyerek eşleşme şansını artırır."""
+    return re.sub(r'[^a-zA-Z0-9]', '', str(s)).upper()
+
+def calculate_discount(price_str, disc_str):
+    """Fiyatı temizler ve zincir iskontoyu hesaplar."""
+    try:
+        # Fiyat temizleme: ₺, . ve boşlukları kaldır, virgülü noktaya çevir
+        num_str = price_str.replace('₺', '').replace('.', '').replace(',', '.').strip()
+        val = float(num_str)
+        if not disc_str: return round(val, 2)
+        
+        # 50+10 gibi yapıları işle
+        discounts = [float(d.strip()) for d in disc_str.split('+') if d.strip()]
+        for d in discounts:
+            val = val * (1 - d / 100)
+        return round(val, 2)
+    except:
+        return 0
+
+# 2. ARAYÜZ
 st.title("🔍 Akıllı Konumsal Fiyat Eşleştirici")
-st.write("Kod nerede olursa olsun CTRL+F mantığıyla bulur ve o sayfadaki en alakalı fiyatı eşleştirir.")
+st.write("Kod nerede olursa olsun CTRL+F mantığıyla bulur ve o sayfadaki fiyatı yakalar.")
 
 col1, col2, col3 = st.columns([1, 1, 1])
 with col1:
@@ -17,17 +40,7 @@ with col2:
 with col3:
     discount_input = st.text_input("İskonto (Örn: 50+10)", value="20")
 
-def calculate_discount(price_str, disc_str):
-    try:
-        num_str = price_str.replace('₺', '').replace('.', '').replace(',', '.').strip()
-        val = float(num_str)
-        if not disc_str: return round(val, 2)
-        discounts = [float(d.strip()) for d in disc_str.split('+') if d.strip()]
-        for d in discounts:
-            val = val * (1 - d / 100)
-        return round(val, 2)
-    except: return 0
-
+# 3. ANA MANTIK
 if reference_excel and pdf_file:
     # Excel Verilerini Oku
     ref_df = pd.read_excel(reference_excel)
@@ -38,12 +51,12 @@ if reference_excel and pdf_file:
             "code": str(row.iloc[1]).strip()
         })
 
-    st.info(f"Excel'den {len(products_to_search)} ürün alındı. PDF taranıyor...")
+    st.info(f"Excel'den {len(products_to_search)} ürün yüklendi. PDF taranıyor...")
 
     found_data = []
     not_found = []
     
-    # Fiyat Regex: ₺25,09 veya 1.250,00 formatı
+    # Fiyat Regex: ₺25,09 veya 1.250,00 veya 50,65 formatı
     price_pattern = re.compile(r'₺?\s?\d{1,3}(?:\.\d{3})*,\d{2}')
 
     with pdfplumber.open(pdf_file) as pdf:
@@ -51,38 +64,28 @@ if reference_excel and pdf_file:
         
         for idx, target in enumerate(products_to_search):
             search_code = target['code']
-            if not search_code or search_code == 'nan':
+            if not search_code or search_code == 'nan' or search_code == "":
                 continue
             
             is_found_for_this_code = False
+            clean_target_code = clean_string(search_code)
             
             for page in pdf.pages:
-                # 1. ADIM: KODU BUL (Konumsal olarak)
-                # Sayfadaki tüm kelimeleri ve koordinatlarını al
-                words = page.extract_words()
+                # Sayfa metnini ve kelimeleri al
+                page_text = page.extract_text()
+                if not page_text: continue
                 
-                # Kodun o sayfada geçtiği yerleri bul
-                code_instances = [w for w in words if search_code in w['text'] or clean_string(search_code) in clean_string(w['text'])]
-                
-                if code_instances:
-                    # Kodu bulduk! Şimdi bu sayfanın metnini alıp fiyat arayalım
-                    page_text = page.extract_text()
+                # Kod o sayfada geçiyor mu? (Esnek arama)
+                if search_code in page_text or clean_target_code in clean_string(page_text):
                     
-                    # Sayfa metninde tüm fiyatları bul
-                    all_prices = list(price_pattern.finditer(page_text))
+                    # Sayfadaki tüm fiyatları bul
+                    all_prices = price_pattern.findall(page_text)
                     
                     if all_prices:
-                        # ANO ÇITASI örneğindeki gibi kod yukarıda fiyat aşağıda olabilir.
-                        # Kodun geçtiği yerden SONRAKİ ilk fiyatı veya sayfadaki en mantıklı fiyatı alalım.
-                        # Basit ve etkili mantık: Kod o sayfadaysa, o sayfadaki fiyatlara bak.
-                        
-                        # Eğer sayfada tek bir fiyat varsa direkt onu al
-                        if len(all_prices) == 1:
-                            p_found = all_prices[0].group()
-                        else:
-                            # Birden fazla fiyat varsa, kodun geçtiği metin bloğuna en yakın olanı bulmaya çalışırız
-                            # Şimdilik sayfadaki ilk fiyatı alıyoruz (Genelde o bloktaki fiyattır)
-                            p_found = all_prices[0].group() 
+                        # ANO ÇITASI mantığı: Kod sayfadaysa, sayfadaki fiyatlara bak.
+                        # Genelde ürün kodu ile fiyat aynı sayfada/bloktadır.
+                        # Birden fazla fiyat varsa, 'Fiyat' kelimesine en yakın olanı veya ilkini alıyoruz.
+                        p_found = all_prices[0] # İlk bulunan fiyatı al
 
                         found_data.append({
                             "Ürün İsmi": target['name'],
@@ -92,28 +95,27 @@ if reference_excel and pdf_file:
                             "Sayfa": page.page_number
                         })
                         is_found_for_this_code = True
-                        break # Diğer sayfalara bakma
+                        break # Bu kod bulundu, diğer sayfalara bakma
             
             if not is_found_for_this_code:
                 not_found.append(target)
             
             progress_bar.progress((idx + 1) / len(products_to_search))
 
-    # Sonuçlar
+    # 4. SONUÇLARIN GÖSTERİLMESİ
     st.divider()
     if found_data:
         res_df = pd.DataFrame(found_data).drop_duplicates(subset=['Ürün Kodu'])
         st.success(f"✅ {len(res_df)} ürün başarıyla eşleşti!")
-        st.dataframe(res_df)
+        st.dataframe(res_df, use_container_width=True)
         
+        # Excel İndirme
         out = io.BytesIO()
         with pd.ExcelWriter(out, engine='openpyxl') as writer:
             res_df.to_excel(writer, index=False)
-        st.download_button("📥 Excel'i İndir", out.getvalue(), "guncel_fiyatlar.xlsx")
+        st.download_button("📥 Güncel Excel'i İndir", out.getvalue(), "guncel_fiyat_listesi.xlsx")
     
     if not_found:
         with st.expander(f"❌ Bulunamayan Ürünler ({len(not_found)})"):
-            st.write(pd.DataFrame(not_found))
-
-def clean_string(s):
-    return re.sub(r'[^a-zA-Z0-9]', '', str(s)).upper()
+            st.write("Bu ürünlerin kodları PDF içinde metin olarak bulunamadı. Kodları kontrol edin.")
+            st.table(pd.DataFrame(not_found))
