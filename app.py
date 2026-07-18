@@ -4,30 +4,25 @@ import pandas as pd
 import io
 import re
 
-st.set_page_config(page_title="Referanslı Fiyat Botu", layout="wide")
+st.set_page_config(page_title="Gelişmiş Hibrit Eşleştirici", layout="wide")
 
-st.markdown("""
-    <style>
-    .main { background-color: #f0f2f6; }
-    .stButton>button { width: 100%; background-color: #008CBA; color: white; font-weight: bold; border-radius: 8px; }
-    </style>
-    """, unsafe_allow_html=True)
+st.title("🚀 Akıllı Hibrit Eşleştirme Sistemi")
+st.write("Kodlar değişmiş olsa bile hem koddan hem de isimden PDF'i tarar.")
 
-st.title("🎯 Referans Excel Destekli Fiyat Botu")
-st.write("Excel'deki kodları PDF içinde arar, fiyatı bulur ve senin belirlediğin ismi yazar.")
-
-# Kullanıcı Girişleri
 col1, col2, col3 = st.columns([1, 1, 1])
 with col1:
-    reference_excel = st.file_uploader("1. Referans Excel'i Yükle (İsim ve Kod olan)", type="xlsx")
+    reference_excel = st.file_uploader("1. Referans Excel", type="xlsx")
 with col2:
-    pdf_file = st.file_uploader("2. PDF Kataloğu Yükle", type="pdf")
+    pdf_file = st.file_uploader("2. PDF Katalog", type="pdf")
 with col3:
     discount_input = st.text_input("İskonto (Örn: 50+10)", value="50+10")
 
+def clean_string(s):
+    """Kodlardaki boşluk ve tireleri temizler."""
+    return re.sub(r'[^a-zA-Z0-9]', '', str(s)).upper()
+
 def calculate_discount(price_str, disc_str):
     try:
-        # Fiyat temizleme: ₺, . ve boşlukları kaldır, virgülü noktaya çevir
         num_str = price_str.replace('₺', '').replace('.', '').replace(',', '.').strip()
         val = float(num_str)
         if not disc_str: return round(val, 2)
@@ -38,67 +33,105 @@ def calculate_discount(price_str, disc_str):
     except: return 0
 
 if reference_excel and pdf_file:
-    # 1. Excel'i Oku ve Sözlük Oluştur
+    # Excel Verilerini Hazırla
     ref_df = pd.read_excel(reference_excel)
-    # Varsayım: 1. Sütun Ürün İsmi, 2. Sütun Ürün Kodu
-    # Kullanıcı sütun isimlerini bilmiyorsa index bazlı gidelim
-    ref_mapping = {}
-    for index, row in ref_df.iterrows():
+    # İlk sütun İsim, ikinci sütun Kod varsayılıyor
+    products_to_search = []
+    for _, row in ref_df.iterrows():
         name = str(row.iloc[0]).strip()
         code = str(row.iloc[1]).strip()
-        if code and code != 'nan':
-            ref_mapping[code] = name
+        products_to_search.append({
+            "name": name,
+            "code": code,
+            "clean_code": clean_string(code),
+            "clean_name": name.upper()[:20] # İsmin ilk 20 karakteriyle arama yapacağız
+        })
 
-    st.info(f"Excel'den {len(ref_mapping)} adet kod sisteme yüklendi. PDF taranıyor...")
+    st.info(f"Excel'den {len(products_to_search)} ürün yüklendi. Hibrit tarama başlıyor...")
 
-    final_results = []
+    found_data = []
+    not_found_codes = []
     price_pattern = re.compile(r'\d{1,3}(?:\.\d{3})*,\d{2}')
 
     with pdfplumber.open(pdf_file) as pdf:
-        progress_bar = st.progress(0)
-        total_pages = len(pdf.pages)
+        progress = st.progress(0)
         
-        for i, page in enumerate(pdf.pages):
-            text_lines = page.extract_text().split('\n')
+        # Hız için tüm PDF metnini sayfa sayfa bir listeye alalım
+        pages_content = []
+        for p in pdf.pages:
+            pages_content.append(p.extract_text() or "")
+
+        for idx, target in enumerate(products_to_search):
+            found = False
             
-            for line in text_lines:
-                # Excel'deki her kodu bu satırda ara
-                for code, excel_name in ref_mapping.items():
-                    if code in line:
-                        # Satırda fiyat ara
-                        price_match = price_pattern.search(line)
+            for page_txt in pages_content:
+                lines = page_txt.split('\n')
+                for i, line in enumerate(lines):
+                    clean_line = clean_string(line)
+                    
+                    # 1. KONTROL: Kod birebir var mı veya temizlenmiş hali satırda geçiyor mu?
+                    if (target['code'] != 'nan' and target['code'] in line) or \
+                       (target['clean_code'] != '' and target['clean_code'] in clean_line):
+                        
+                        # Fiyatı ara (aynı satırda veya sonraki 2 satırda)
+                        search_area = " ".join(lines[i:i+3])
+                        price_match = price_pattern.search(search_area)
+                        
                         if price_match:
-                            price_found = price_match.group()
-                            net_price = calculate_discount(price_found, discount_input)
-                            
-                            final_results.append({
-                                "Ürün İsmi (Excel'den)": excel_name,
-                                "Ürün Kodu": code,
-                                "Liste Fiyatı (PDF'den)": price_found,
-                                "Net Fiyat": net_price,
-                                "İskonto": discount_input
+                            p_found = price_match.group()
+                            found_data.append({
+                                "Excel Ürün İsmi": target['name'],
+                                "Excel Ürün Kodu": target['code'],
+                                "PDF'de Bulunan Fiyat": p_found,
+                                "Net Fiyat": calculate_discount(p_found, discount_input),
+                                "Eşleşme Türü": "Kod Eşleşti"
                             })
-            progress_bar.progress((i + 1) / total_pages)
+                            found = True
+                            break
 
-    if final_results:
-        result_df = pd.DataFrame(final_results)
-        # Aynı kod birden fazla yerde varsa en sonuncuyu veya hepsini tutabiliriz. 
-        # Genelde katalogda bir ürün bir kez olur. Duplicate'leri temizleyelim:
-        result_df = result_df.drop_duplicates(subset=['Ürün Kodu'], keep='first')
-        
-        st.success(f"✅ Eşleşen {len(result_df)} ürün bulundu!")
-        st.dataframe(result_df, use_container_width=True)
+                if found: break # Ürün bulunduysa diğer sayfalara bakma
 
-        # Excel Çıktısı
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            result_df.to_excel(writer, index=False)
+                # 2. KONTROL (Eğer kodla bulunamadıysa): İsimden ara
+                if not found and len(target['name']) > 5:
+                    for i, line in enumerate(lines):
+                        if target['name'].upper()[:15] in line.upper(): # İsmin başından yakala
+                            search_area = " ".join(lines[i:i+3])
+                            price_match = price_pattern.search(search_area)
+                            if price_match:
+                                p_found = price_match.group()
+                                found_data.append({
+                                    "Excel Ürün İsmi": target['name'],
+                                    "Excel Ürün Kodu": target['code'],
+                                    "PDF'de Bulunan Fiyat": p_found,
+                                    "Net Fiyat": calculate_discount(p_found, discount_input),
+                                    "Eşleşme Türü": "İsimden Yakalandı"
+                                })
+                                found = True
+                                break
+                if found: break
+
+            if not found:
+                not_found_codes.append(target)
+            
+            progress.progress((idx + 1) / len(products_to_search))
+
+    # Sonuçları Göster
+    st.divider()
+    c1, c2 = st.columns(2)
+    c1.metric("Toplam Ürün", len(products_to_search))
+    c2.metric("Bulunan Ürün", len(found_data))
+
+    if found_data:
+        res_df = pd.DataFrame(found_data).drop_duplicates(subset=['Excel Ürün Kodu'], keep='first')
+        st.success("✅ Eşleşen Ürünler Tablosu")
+        st.dataframe(res_df, use_container_width=True)
         
-        st.download_button(
-            label="📥 Sonuç Excel Dosyasını İndir",
-            data=output.getvalue(),
-            file_name="pdf_fiyat_eslesme.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    else:
-        st.error("Üzgünüm, Excel'deki kodlar PDF içinde bulunamadı. Lütfen kodların PDF'te tam olarak nasıl yazıldığını kontrol edin.")
+        # İndirme
+        out = io.BytesIO()
+        with pd.ExcelWriter(out, engine='openpyxl') as writer:
+            res_df.to_excel(writer, index=False)
+        st.download_button("📥 Başarılı Eşleşmeleri İndir", out.getvalue(), "basarili_listem.xlsx")
+
+    if not_found_codes:
+        with st.expander("❌ Bulunamayan Ürünler Listesi"):
+            st.table(pd.DataFrame(not_found_codes)[['name', 'code']])
