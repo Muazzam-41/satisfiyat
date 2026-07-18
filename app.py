@@ -1,10 +1,9 @@
 import streamlit as st
 import pandas as pd
 import io
-import re
 
 # Sayfa Yapılandırması
-st.set_page_config(page_title="Excel Fiyat Karşılaştırıcı", layout="wide")
+st.set_page_config(page_title="Gelişmiş Excel Eşleştirici", layout="wide")
 
 def calculate_chain_discount(price, disc_str):
     """Zincir iskontoyu matematiksel olarak uygular."""
@@ -20,88 +19,99 @@ def calculate_chain_discount(price, disc_str):
     except:
         return 0
 
-st.title("📊 Excel Ürün Adı Eşleştirme & Fiyatlandırma")
-st.write("İki Excel dosyasını 'Ürün Adı' üzerinden karşılaştırır ve J sütunundaki fiyatı çekerek iskonto uygular.")
+st.title("📊 Profesyonel Excel Fiyat Karşılaştırma")
+st.write("Ürün Adı üzerinden eşleştirme yapar, J sütunundan fiyatı çeker ve raporlar.")
 
 # Dosya Yükleme Alanları
 col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("1. Kendi Ürün Listeniz")
-    ref_file = st.file_uploader("Ürün isimlerinin olduğu Excel'i yükleyin", type="xlsx", key="ref")
+    ref_file = st.file_uploader("Kendi Excel'inizi yükleyin", type="xlsx", key="ref")
 
 with col2:
-    st.subheader("2. Güncel Fiyat Listesi (Tedarikçi)")
-    price_file = st.file_uploader("Fiyatların olduğu Excel'i (SVR) yükleyin", type="xlsx", key="price")
+    st.subheader("2. Güncel Fiyat Listesi (SVR)")
+    price_file = st.file_uploader("Tedarikçi Fiyat Excel'ini yükleyin", type="xlsx", key="price")
 
-discount_input = st.text_input("📉 Uygulanacak İskonto Oranı (Örn: 50+15)", value="50+15")
+discount_input = st.text_input("📉 Uygulanacak İskonto (Örn: 50+15)", value="50+15")
 
-if st.button("🚀 EŞLEŞTİRMEYİ VE HESAPLAMAYI BAŞLAT"):
+if st.button("🚀 EŞLEŞTİRMEYİ BAŞLAT"):
     if ref_file and price_file:
         try:
             # 1. Dosyaları oku
-            # Fiyat listesini (SVR) okurken Malzeme Adı (C) ve Birim Fiyatı (J) sütunlarına odaklanıyoruz
             df_ref = pd.read_excel(ref_file)
             df_price = pd.read_excel(price_file)
 
-            # Görseldeki yapıya göre (C sütunu isim, J sütunu fiyat)
-            # Not: Python'da sütunlar 0'dan başlar (A=0, B=1, C=2... J=9)
-            # Eğer Excel'de başlık satırı farklıysa sütun isimlerini manuel belirleyelim:
-            
             # Fiyat Listesi Sözlüğü Oluştur (İsim -> Fiyat)
-            # Harf duyarlılığını ve boşlukları temizleyerek eşleştirme gücünü artırıyoruz
+            # Görseldeki yapı: C sütunu (İsim) = index 2, J sütunu (Fiyat) = index 9
             price_map = {}
             for _, row in df_price.iterrows():
                 try:
-                    m_adi = str(row.iloc[2]).strip().lower() # C Sütunu (Malzeme Adı)
-                    b_fiyat = row.iloc[9]                   # J Sütunu (Birim Fiyatı)
+                    m_adi = str(row.iloc[2]).strip().lower() # Malzeme Adı (C)
+                    b_fiyat = row.iloc[9]                   # Birim Fiyatı (J)
                     price_map[m_adi] = b_fiyat
                 except:
                     continue
 
-            # 2. Karşılaştırma ve Yeni Liste Oluşturma
-            results = []
+            # 2. Karşılaştırma ve Listeleme
+            matched_results = []
+            unmatched_results = []
+
             for _, row in df_ref.iterrows():
-                ref_name = str(row.iloc[0]).strip() # Kendi listenizdeki ilk sütun isim varsayılıyor
+                # Kendi listenizdeki ilk sütun isim varsayılıyor (Gerekirse iloc[0] değişebilir)
+                ref_name = str(row.iloc[0]).strip() 
                 ref_name_lower = ref_name.lower()
 
                 if ref_name_lower in price_map:
                     liste_fiyati = price_map[ref_name_lower]
                     net_fiyat = calculate_chain_discount(liste_fiyati, discount_input)
                     
-                    results.append({
+                    matched_results.append({
                         "Ürün Adı": ref_name,
-                        "Eski Liste Fiyatı (J Sütunu)": liste_fiyati,
+                        "Liste Fiyatı (J)": liste_fiyati,
                         "İskonto": discount_input,
-                        "Yeni İskontolu Fiyat": net_fiyat,
-                        "Durum": "Eşleşti"
+                        "Net Fiyat": net_fiyat
                     })
                 else:
-                    results.append({
+                    unmatched_results.append({
                         "Ürün Adı": ref_name,
-                        "Eski Liste Fiyatı (J Sütunu)": "-",
-                        "İskonto": "-",
-                        "Yeni İskontolu Fiyat": "-",
-                        "Durum": "Bulunamadı"
+                        "Durum": "Fiyat Listesinde Bulunamadı"
                     })
 
-            # 3. Sonuçları Göster ve İndir
-            res_df = pd.DataFrame(results)
-            st.success(f"İşlem Tamamlandı! {len(res_df[res_df['Durum'] == 'Eşleşti'])} ürün başarıyla eşleşti.")
-            st.dataframe(res_df, use_container_width=True)
+            # 3. GÖRSELLEŞTİRME VE RAPORLAMA
+            tab1, tab2 = st.tabs(["✅ Eşleşen Ürünler", "❌ Bulunamayan Ürünler"])
 
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                res_df.to_excel(writer, index=False)
-            
-            st.download_button(
-                label="📥 Hazırlanan Excel'i İndir",
-                data=output.getvalue(),
-                file_name="guncellenmis_fiyat_listesi.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            with tab1:
+                if matched_results:
+                    res_matched_df = pd.DataFrame(matched_results)
+                    st.success(f"{len(res_matched_df)} ürün başarıyla güncellendi.")
+                    st.dataframe(res_matched_df, use_container_width=True)
+                    
+                    # İndirme Butonu (Eşleşenler)
+                    output_ok = io.BytesIO()
+                    with pd.ExcelWriter(output_ok, engine='openpyxl') as writer:
+                        res_matched_df.to_excel(writer, index=False)
+                    st.download_button("📥 Güncel Fiyat Listesini İndir", output_ok.getvalue(), "guncel_fiyatlar.xlsx")
+                else:
+                    st.warning("Hiçbir ürün eşleşmedi.")
+
+            with tab2:
+                if unmatched_results:
+                    res_unmatched_df = pd.DataFrame(unmatched_results)
+                    st.error(f"{len(res_unmatched_df)} ürün fiyat listesinde bulunamadı.")
+                    st.write("Aşağıdaki ürünlerin isimlerini kontrol etmeniz gerekebilir:")
+                    st.table(res_unmatched_df)
+                    
+                    # İndirme Butonu (Bulunamayanlar)
+                    output_fail = io.BytesIO()
+                    with pd.ExcelWriter(output_fail, engine='openpyxl') as writer:
+                        res_unmatched_df.to_excel(writer, index=False)
+                    st.download_button("📥 Bulunamayanlar Listesini İndir", output_fail.getvalue(), "eksik_urunler.xlsx")
+                else:
+                    st.balloons()
+                    st.success("Tebrikler! Listenizdeki tüm ürünler fiyat listesinde bulundu.")
 
         except Exception as e:
-            st.error(f"Bir hata oluştu: {e}")
+            st.error(f"Hata: {e}. Lütfen Excel sütunlarının (C ve J) görseldeki gibi olduğundan emin olun.")
     else:
-        st.warning("Lütfen her iki Excel dosyasını da yükleyin.")
+        st.warning("İşlem için iki Excel dosyasını da yüklemelisiniz.")
