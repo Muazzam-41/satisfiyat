@@ -4,17 +4,16 @@ import io
 import re
 
 # Sayfa Yapılandırması
-st.set_page_config(page_title="Hatasız Kod Eşleştirici", layout="wide")
+st.set_page_config(page_title="Tanımlı Fiyat Eşleştirici", layout="wide")
 
 def clean_code(text):
-    """Kodları eşleşme için temizler."""
+    """Kodları eşleşme için temizler: Boşluk, nokta, tire siler."""
     if not text or pd.isna(text):
         return ""
-    # Sadece harf ve rakamları tutar (Boşluk, nokta, tire silinir)
     return re.sub(r'[^a-zA-Z0-9]', '', str(text)).upper()
 
 def calculate_net_price(price, disc_str):
-    """Zincir iskontoyu hatasız uygular."""
+    """Birim Fiyatı üzerinden zincir iskontoyu uygular."""
     try:
         if isinstance(price, str):
             price = price.replace('₺', '').replace('.', '').replace(',', '.').strip()
@@ -28,110 +27,115 @@ def calculate_net_price(price, disc_str):
     except:
         return 0
 
-def find_column_index(df, target_name):
-    """Excel içinde başlığa göre sütun indeksini bulur."""
-    target_name = str(target_name).strip().lower()
+def find_column_index(df, target_names):
+    """Verilen alternatif isimlere göre sütun indeksini bulur."""
     for i, col in enumerate(df.columns):
-        if target_name in str(col).strip().lower():
-            return i
-    # Başlıklarda bulamazsa ilk satırlarda ara (Bazı Excel'lerde başlık 1. satırda olmayabilir)
-    for i in range(len(df.columns)):
-        first_rows = df.iloc[:5, i].astype(str).str.lower()
-        if first_rows.str.contains(target_name).any():
+        clean_col = str(col).strip().lower()
+        if any(name.lower() in clean_col for name in target_names):
             return i
     return None
 
-st.title("🎯 Nokta Atışı: Sütun İsmiyle Eşleştirme")
-st.write("Sistem artık sütun sırasına değil, doğrudan 'Malzeme Kodu' başlığına bakar.")
+st.title("🎯 Nokta Atışı: Tanımlı Fiyatlandırma Sistemi")
+st.write("Eşleştirme: **Malzeme Kodu** | Fiyat Kaynağı: **Birim Fiyatı (Tanımlı)**")
 
 col1, col2 = st.columns(2)
 with col1:
-    ref_file = st.file_uploader("1. Kendi Ürün Listeniz", type="xlsx", key="ref")
+    ref_file = st.file_uploader("1. Kendi Ürün Listeniz (Excel)", type="xlsx", key="ref")
 with col2:
-    svr_file = st.file_uploader("2. SVR Teknik Bayi Listesi", type="xlsx", key="svr")
+    svr_file = st.file_uploader("2. SVR Fiyat Listesi (Excel)", type="xlsx", key="svr")
 
-discount_input = st.text_input("📉 Uygulanacak İskonto (Örn: 50+15)", value="50+15")
+discount_input = st.text_input("📉 J Sütununa Uygulanacak Ana İskonto (Örn: 50+15)", value="50+15")
 
-if st.button("🚀 VERİLERİ EŞLEŞTİR VE HESAPLA"):
+if st.button("🚀 HESAPLAMAYI BAŞLAT"):
     if ref_file and svr_file:
         try:
-            # Excel'leri oku
-            df_ref = pd.read_excel(ref_file)
-            df_svr = pd.read_excel(svr_file)
+            with st.spinner('Veriler işleniyor...'):
+                # Excel'leri oku
+                df_ref = pd.read_excel(ref_file)
+                df_svr = pd.read_excel(svr_file)
 
-            # --- SÜTUNLARI TESPİT ET ---
-            # Kendi listenizde "Malzeme Kodu" sütununu bul
-            ref_code_idx = find_column_index(df_ref, "Malzeme Kodu")
-            
-            # SVR dosyasında gerekli sütunları bul
-            svr_code_idx = find_column_index(df_svr, "Malzeme Kodu")
-            svr_name_idx = find_column_index(df_svr, "Malzeme Adı")
-            svr_price_idx = find_column_index(df_svr, "Birim Fiyatı") # J Sütunu
+                # --- SÜTUNLARI TESPİT ET ---
+                # Referans Excel'de Malzeme Kodu sütununu bul
+                ref_code_idx = find_column_index(df_ref, ["Malzeme Kodu", "Kod"])
+                
+                # SVR Excel'de Malzeme Kodu, Adı ve "Birim Fiyatı (Tanımlı)" sütunlarını bul
+                svr_code_idx = find_column_index(df_svr, ["Malzeme Kodu"])
+                svr_name_idx = find_column_index(df_svr, ["Malzeme Adı"])
+                # Özellikle sizin istediğiniz sütun ismi:
+                svr_price_idx = find_column_index(df_svr, ["Birim Fiyatı (Tanımlı)"])
 
-            # Eksik sütun kontrolü
-            if ref_code_idx is None or svr_code_idx is None:
-                st.error("HATA: Her iki Excel'de de 'Malzeme Kodu' başlıklı bir sütun bulunamadı!")
-                st.stop()
-            
-            if svr_price_idx is None:
-                st.warning("Uyarı: SVR'de 'Birim Fiyatı' başlığı bulunamadı, varsayılan olarak J sütununa (10. sütun) bakılıyor.")
-                svr_price_idx = 9
+                # Hata kontrolleri
+                if ref_code_idx is None:
+                    st.error("HATA: Kendi listenizde 'Malzeme Kodu' sütunu bulunamadı!")
+                    st.stop()
+                if svr_code_idx is None:
+                    st.error("HATA: SVR listesinde 'Malzeme Kodu' sütunu bulunamadı!")
+                    st.stop()
+                if svr_price_idx is None:
+                    st.error("HATA: SVR listesinde 'Birim Fiyatı (Tanımlı)' sütunu bulunamadı! Lütfen sütun ismini kontrol edin.")
+                    st.stop()
 
-            # --- VERİ HARİTASINI OLUŞTUR (SVR) ---
-            price_map = {}
-            name_map = {}
-            for _, row in df_svr.iterrows():
-                try:
-                    c_code = clean_code(row.iloc[svr_code_idx])
-                    c_price = row.iloc[svr_price_idx]
-                    c_name = row.iloc[svr_name_idx] if svr_name_idx is not None else "İsim Yok"
-                    
-                    if c_code:
-                        price_map[c_code] = c_price
-                        name_map[c_code] = c_name
-                except: continue
+                # --- SVR VERİLERİNİ HAFIZAYA AL ---
+                price_map = {}
+                name_map = {}
+                for _, row in df_svr.iterrows():
+                    try:
+                        c_code = clean_code(row.iloc[svr_code_idx])
+                        c_price = row.iloc[svr_price_idx]
+                        c_name = row.iloc[svr_name_idx] if svr_name_idx is not None else "İsim Bilgisi Yok"
+                        
+                        if c_code:
+                            price_map[c_code] = c_price
+                            name_map[c_code] = c_name
+                    except: continue
 
-            # --- EŞLEŞTİRME ---
-            results = []
-            failed = []
+                # --- EŞLEŞTİRME VE HESAPLAMA ---
+                final_results = []
+                not_found = []
 
-            for _, row in df_ref.iterrows():
-                raw_code = str(row.iloc[ref_code_idx]).strip()
-                cleaned_ref_code = clean_code(raw_code)
+                for _, row in df_ref.iterrows():
+                    raw_ref_code = str(row.iloc[ref_code_idx]).strip()
+                    clean_ref_code = clean_code(raw_ref_code)
 
-                if cleaned_ref_code in price_map:
-                    l_price = price_map[cleaned_ref_code]
-                    net = calculate_net_price(l_price, discount_input)
-                    
-                    results.append({
-                        "Malzeme Kodu": raw_code,
-                        "Malzeme Adı": name_map[cleaned_ref_code],
-                        "Liste Fiyatı": l_price,
-                        "Net Fiyat": round(net, 4),
-                        "Barem %12": round(net / 0.88, 4),
-                        "40+12 Barem": round(net / 0.528, 4)
-                    })
-                else:
-                    if raw_code != "nan" and raw_code != "":
-                        failed.append({"Kod": raw_code})
+                    if clean_ref_code in price_map:
+                        liste_fiyat = price_map[clean_ref_code]
+                        net_fiyat = calculate_net_price(liste_fiyat, discount_input)
+                        
+                        # İstediğiniz Barem Hesaplamaları
+                        final_results.append({
+                            "Malzeme Kodu": raw_ref_code,
+                            "Malzeme Adı": name_map[clean_ref_code],
+                            "Birim Fiyatı (Tanımlı)": round(float(liste_fiyat), 2) if pd.notna(liste_fiyat) else 0,
+                            "Net Fiyat": round(net_fiyat, 4),
+                            "Barem Liste (%12)": round(net_fiyat / 0.88, 4),
+                            "40+12 Liste": round(net_fiyat / (0.60 * 0.88), 4)
+                        })
+                    else:
+                        if raw_ref_code != "nan" and raw_ref_code != "":
+                            not_found.append({"Kod": raw_ref_code})
 
-            # --- ÇIKTI ---
-            t1, t2 = st.tabs(["✅ Eşleşenler", "❌ Bulunamayan Kodlar"])
-            with t1:
-                if results:
-                    res_df = pd.DataFrame(results)
-                    st.success(f"{len(res_df)} ürün doğru kodla eşleşti.")
-                    st.dataframe(res_df)
-                    
-                    output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        res_df.to_excel(writer, index=False)
-                    st.download_button("📥 Excel İndir", output.getvalue(), "fiyat_listesi.xlsx")
-            
-            with t2:
-                if failed:
-                    st.error(f"{len(failed)} kod SVR'de bulunamadı.")
-                    st.dataframe(pd.DataFrame(failed))
+                # --- SONUÇLARI GÖSTER ---
+                tab1, tab2 = st.tabs(["✅ Eşleşen ve Hesaplananlar", "❌ Bulunamayan Kodlar"])
+                
+                with tab1:
+                    if final_results:
+                        res_df = pd.DataFrame(final_results)
+                        st.success(f"Başarılı: {len(res_df)} ürün eşleşti.")
+                        st.dataframe(res_df, use_container_width=True)
+                        
+                        output = io.BytesIO()
+                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                            res_df.to_excel(writer, index=False)
+                        st.download_button("📥 Excel Olarak İndir", output.getvalue(), "guncel_fiyat_listesi.xlsx")
+                    else:
+                        st.warning("Eşleşen ürün bulunamadı.")
+
+                with tab2:
+                    if not_found:
+                        st.error(f"{len(not_found)} kod SVR listesinde bulunamadı.")
+                        st.table(pd.DataFrame(not_found))
 
         except Exception as e:
-            st.error(f"Sistemsel Hata: {e}")
+            st.error(f"Sistem Hatası: {e}")
+    else:
+        st.warning("Lütfen her iki dosyayı da yükleyin.")
